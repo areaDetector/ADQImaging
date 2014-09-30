@@ -2,7 +2,7 @@
         "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xml:lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
-  <title>areaDetector Andor3 driver</title>
+  <title>areaDetector QImaging driver</title>
   <meta content="text/html; charset=ISO-8859-1" http-equiv="Content-Type" />
 </head>
 <body>
@@ -83,20 +83,10 @@
     bounds for that feature. The feature callback is used to ensure that the current
     EPICS readback value of that parameter matches the actual camera value, without
     requiring the driver to poll.</p>
-  <p>
-    areaDetector includes the header and library files required to build the andor3
-    driver on any Linux or Windows computer. However, it does not include the shareable
-    libraries, DLLs or drivers to actually run a detector. Those must be obtained from
-    Andor, either by purchasing their SDK or their Solis application software. On Windows
-    the path to the directory containing the Andor DLLs from the SDK or Solis must be
-    added to the PATH environment variable when running the areaDetector IOC. On Linux
-    the path to the directory containing the Andor shareable libraries from the SDK
-    must be added to the LD_LIBRARY_PATH environment variable when running the areaDetector
-    IOC.</p>
   <h2 id="StandardNotes" style="text-align: left">
     Implementation of standard driver parameters</h2>
   <p>
-    The following table describes how the Andor driver implements some of the standard
+    The following table describes how the QImaging driver implements some of the standard
     driver parameters.
   </p>
   <table border="1" cellpadding="2" cellspacing="2" style="text-align: left">
@@ -154,8 +144,7 @@
           $(P)$(R)NumExposures<br />
           $(P)$(R)NumExposures_RBV</td>
         <td>
-          Sets the number of accumulations per image. This is performed in Andor's driver,
-          not on the chip.</td>
+          Sets the number of accumulations per image.</td>
       </tr>
       <tr>
         <td>
@@ -634,30 +623,18 @@
                 int maxBuffers, size_t maxMemory,
                 int priority, int stackSize, int maxFrames)
   </pre>
-  <p>
-    For details on the meaning of the parameters to this function refer to the detailed
-    documentation on the andor3Config function in the <a href="areaDetectorDoxygenHTML/andor3_8cpp.html">
-      andor3.cpp documentation</a> and in the documentation for the constructor for
-    the <a href="areaDetectorDoxygenHTML/classandor3.html">andor3 class</a>. The maxFrames
-    parameter controls the number of frame buffers the driver queues to the SDK when
-    acquiring data. The default value is 10. Increasing this number will allow the SDK
-    to transfer images from the camera at the full interface speed even when the driver
-    is not reading them that quickly. This will help to prevent frames from filling
-    the camera RAM when operating close to the maximum interface transfer rate (=TransferRate).
-  </p>
+  
   <h2 id="MEDM_screen" style="text-align: left">
     MEDM screen</h2>
   <p>
     The following shows the MEDM screen that is used to control the QImage detector.
-    Note that the general purpose screen ADBase.adl can be used, but it exposes a few
-    controls that are not applicable to the QImage, and lacks some fields that are important
-    for the Andor.</p>
+   </p>
   <p>
     <code>qimage_base.adl</code> is the main screen used to control the QImaging driver.
   </p>
   <div style="text-align: center">
     <h3 style="text-align: center">
-      Andor3.adl</h3>
+      qimage_base.adl</h3>
       <img alt="QImage_MEDM.png" src="QImage_MEDM.png" /></div>
   
 </body>
