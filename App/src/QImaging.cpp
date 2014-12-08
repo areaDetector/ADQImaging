@@ -268,7 +268,7 @@ asynStatus QImage::connectQImage()
 	listLen = sizeof(list)/sizeof(QCam_CamListItem);
 
 	// Start QImage
-	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: Starting Camera Initialization\n\n", functionName);
+	asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Starting Camera Initialization\n\n", functionName);
 
 	// Initialize QImage Driver
 	status |= resultCode(functionName, "QCam_LoadDriver", QCam_LoadDriver());
@@ -277,7 +277,10 @@ asynStatus QImage::connectQImage()
 	if (!status) status |= resultCode(functionName, "QCam_ListCameras", QCam_ListCameras(list, &listLen));
 
 	if (listLen < 1)
+	{
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: No cameras found!\n\n", functionName);
 		return((asynStatus)-1);
+	}
 
 	// Gets camera handle for first camera in list
 	if (!status) status |= resultCode(functionName, "QCam_OpenCamera", QCam_OpenCamera(list[0].cameraId, &qHandle));
@@ -292,7 +295,7 @@ asynStatus QImage::connectQImage()
 		resultCode(functionName, "QCam_InitializeCameraSettings", QCam_InitializeCameraSettings(qHandle, &qSettings));
 		isSettingsInit = true;
 	}
-
+	asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Query settings\n\n", functionName);
 	if (!status) status |= queryQImageSettings();
 
 	////if (!status) status |= initializeQImage();
@@ -758,8 +761,8 @@ asynStatus QImage::initializeQImage()
 	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmImageFormat)", QCam_SetParam((QCam_Settings*)&qSettings, qprmImageFormat, uvalue));
 	if (!status) status |= getIntegerParam(ADTriggerMode, &ivalue);
 	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmTriggerType)", QCam_SetParam((QCam_Settings*)&qSettings, qprmTriggerType, ivalue));
-	if (!status) status |= getIntegerParam(qReadoutSpeed, &ivalue);
-	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmReadoutSpeed)", QCam_SetParam((QCam_Settings*)&qSettings, qprmReadoutSpeed, ivalue));
+//	if (!status) status |= getIntegerParam(qReadoutSpeed, &ivalue);
+//	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmReadoutSpeed)", QCam_SetParam((QCam_Settings*)&qSettings, qprmReadoutSpeed, ivalue));
 	if (!status) status |= getIntegerParam(ADMinX, (int *)&uvalue);
 	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmRoiX)", QCam_SetParam((QCam_Settings*)&qSettings, qprmRoiX, uvalue));
 	if (!status) status |= getIntegerParam(ADMinY, (int *)&uvalue);
@@ -1591,7 +1594,8 @@ asynStatus QImage::q_setReadoutSpeed(epicsInt32 value)
 	//check settings
 	if (!status) status |= resultCode(functionName, "QCam_ReadSettingsFromCam", QCam_ReadSettingsFromCam(qHandle, (QCam_Settings*)&qSettings));
 	if (!status) status |= resultCode(functionName, "QCam_GetParam(qprmCoolerActive)", QCam_GetParam((QCam_Settings*)&qSettings, qprmCoolerActive, &uvalue));
-	if (!status) status |= setIntegerParam(qReadoutSpeed, uvalue);
+	ivalue = uvalue;
+	if (!status) status |= setIntegerParam(qReadoutSpeed, ivalue);
 
 	return((asynStatus)status);
 }
@@ -1652,82 +1656,83 @@ asynStatus QImage::readEnum(asynUser *pasynUser,
 	*nIn = 0;
 
 	status |= resultCode(functionName, "QCam_ReadSettingsFromCam", QCam_ReadSettingsFromCam(qHandle, (QCam_Settings*)&qSettings));
-
-	if (pasynUser->reason == qBinning)
+	if (!status)
 	{
+		if (pasynUser->reason == qBinning)
+		{
 
-		QCam_GetParamSparseTable((QCam_Settings*)&qSettings, qprmBinning, &Table[0], &TableSize);
-		for (int i = 0; i < TableSize; i++)
-		{
-			asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "Binning %ld x %ld\n", Table[i], Table[i]);
-			if (strings[*nIn]) free(strings[*nIn]);
-			sprintf(enumString, "%ldx%ld\0", Table[i], Table[i]);
-			strings[*nIn] = epicsStrDup(enumString);
-			values[*nIn] = i;
-			severities[*nIn] = 0;
-			(*nIn)++;
-		}
-	}
-	else if (pasynUser->reason == qImageFormat)
-	{
-		QCam_GetParamSparseTable((QCam_Settings*)&qSettings, qprmImageFormat, &Table[0], &TableSize);
-		for (int i = 0; i < TableSize; i++)
-		{
-			asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "image format %ld\n", Table[i]);
-			if (strings[*nIn]) free(strings[*nIn]);
-			switch (Table[i])
+			QCam_GetParamSparseTable((QCam_Settings*)&qSettings, qprmBinning, &Table[0], &TableSize);
+			for (int i = 0; i < TableSize; i++)
 			{
-			case qfmtRaw8:
-				strncpy(enumString, "Raw 8\0", 6);
-				break;
-			case qfmtRaw16:
-				strncpy(enumString, "Raw 16\0", 7);
-				break;
-			case qfmtMono8:
-				strncpy(enumString, "Mono 8\0", 7);
-				break;
-			case qfmtMono16:
-				strncpy(enumString, "Mono 16\0", 8);
-				break;
-			case qfmtBayer8:
-				strncpy(enumString, "Bayer 8\0", 8);
-				break;
-			case qfmtBayer16:
-				strncpy(enumString, "Bayer 16\0", 9);
-				break;
-			case qfmtRgbPlane8:
-				strncpy(enumString, "RGB Plane 8\0", 12);
-				break;
-			case qfmtRgbPlane16:
-				strncpy(enumString, "RGB Plane 16\0", 13);
-				break;
-			case qfmtBgr24:
-				strncpy(enumString, "BGR 24\0", 7);
-				break;
-			case qfmtXrgb32:
-				strncpy(enumString, "XRGB 32\0", 8);
-				break;
-			case qfmtRgb48:
-				strncpy(enumString, "RGB 48\0", 7);
-				break;
-			case qfmtBgrx32:
-				strncpy(enumString, "BGRX 32\0", 8);
-				break;
-			case qfmtRgb24:
-				strncpy(enumString, "RGB 24\0", 7);
-				break;
+				asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "Binning %ld x %ld\n", Table[i], Table[i]);
+				if (strings[*nIn]) free(strings[*nIn]);
+				sprintf(enumString, "%ldx%ld\0", Table[i], Table[i]);
+				strings[*nIn] = epicsStrDup(enumString);
+				values[*nIn] = i;
+				severities[*nIn] = 0;
+				(*nIn)++;
 			}
-			strings[*nIn] = epicsStrDup(enumString);
-			values[*nIn] = i;
-			severities[*nIn] = 0;
-			(*nIn)++;
+		}
+		else if (pasynUser->reason == qImageFormat)
+		{
+			QCam_GetParamSparseTable((QCam_Settings*)&qSettings, qprmImageFormat, &Table[0], &TableSize);
+			for (int i = 0; i < TableSize; i++)
+			{
+				asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "image format %ld\n", Table[i]);
+				if (strings[*nIn]) free(strings[*nIn]);
+				switch (Table[i])
+				{
+				case qfmtRaw8:
+					strncpy(enumString, "Raw 8\0", 6);
+					break;
+				case qfmtRaw16:
+					strncpy(enumString, "Raw 16\0", 7);
+					break;
+				case qfmtMono8:
+					strncpy(enumString, "Mono 8\0", 7);
+					break;
+				case qfmtMono16:
+					strncpy(enumString, "Mono 16\0", 8);
+					break;
+				case qfmtBayer8:
+					strncpy(enumString, "Bayer 8\0", 8);
+					break;
+				case qfmtBayer16:
+					strncpy(enumString, "Bayer 16\0", 9);
+					break;
+				case qfmtRgbPlane8:
+					strncpy(enumString, "RGB Plane 8\0", 12);
+					break;
+				case qfmtRgbPlane16:
+					strncpy(enumString, "RGB Plane 16\0", 13);
+					break;
+				case qfmtBgr24:
+					strncpy(enumString, "BGR 24\0", 7);
+					break;
+				case qfmtXrgb32:
+					strncpy(enumString, "XRGB 32\0", 8);
+					break;
+				case qfmtRgb48:
+					strncpy(enumString, "RGB 48\0", 7);
+					break;
+				case qfmtBgrx32:
+					strncpy(enumString, "BGRX 32\0", 8);
+					break;
+				case qfmtRgb24:
+					strncpy(enumString, "RGB 24\0", 7);
+					break;
+				}
+				strings[*nIn] = epicsStrDup(enumString);
+				values[*nIn] = i;
+				severities[*nIn] = 0;
+				(*nIn)++;
+			}
+		}
+		else
+		{
+			return ADDriver::readEnum(pasynUser, strings, values, severities, nElements, nIn);
 		}
 	}
-	else
-	{
-		return ADDriver::readEnum(pasynUser, strings, values, severities, nElements, nIn);
-	}
-	
 
 	// Get the featureInfo for this parameter, set if it exists, is implemented, and is ATenum
 	/*
