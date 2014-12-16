@@ -144,6 +144,7 @@ public:
 
 
 	epicsEvent captureEvent;
+	epicsEvent captureEvent2;
 
 	//frame structure
 	struct QNDFrame
@@ -158,12 +159,11 @@ public:
 	// Our data
 	epicsTimeStamp  startTime;
 	epicsEventId    stopEventId;
+	epicsEventId    m_acquireEventId;
 	epicsMutex freeFrameMutex;
 	epicsMutex capFrameMutex;
 
 	//epicsMutex detectorMutex;
-
-	double camPushSleepAmt;
 
 	//std::vector<NDArray*> pImage;
 	//NDArray*		pNDArr;
@@ -185,6 +185,8 @@ public:
 	signed long		tempMin;
 	unsigned long   coolerReg;
 	unsigned long   rawDataSize;
+	double m_acquirePeriod;
+	double m_exposureTime;
 	int	_numImages;
 	int	_pushedFrames;
 	int	_capturedFrames;
@@ -200,7 +202,7 @@ public:
 	
 	unsigned long triggerType;
 
-	bool _adAcquire;
+	volatile bool _adAcquire;
 	std::queue<int>	freeFrames;
 	std::queue<int>	collectedFrames;
 	std::vector<QNDFrame>	pFrames;
