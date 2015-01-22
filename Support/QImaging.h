@@ -61,6 +61,7 @@ public:
 	void shutdown(); // This is called by epicsAtExit
 
 	void pushCollectedFrame(int id);
+	void setExposureDone();
 
  protected:
   	int		qMaxBitDepthRBV;
@@ -159,11 +160,14 @@ public:
 	// Our data
 	epicsTimeStamp  startTime;
 	epicsEventId    stopEventId;
-	epicsEventId    m_acquireEventId;
+	epicsEventId m_acquireEventId;
 	epicsMutex freeFrameMutex;
 	epicsMutex capFrameMutex;
 
 	//epicsMutex detectorMutex;
+
+	double camPushSleepAmt;
+	double m_exposureTime;
 
 	//std::vector<NDArray*> pImage;
 	//NDArray*		pNDArr;
@@ -186,7 +190,7 @@ public:
 	unsigned long   coolerReg;
 	unsigned long   rawDataSize;
 	double m_acquirePeriod;
-	double m_exposureTime;
+	double m_acquireTime;
 	int	_numImages;
 	int	_pushedFrames;
 	int	_capturedFrames;
@@ -202,7 +206,7 @@ public:
 	
 	unsigned long triggerType;
 
-	volatile bool _adAcquire;
+	bool _adAcquire;
 	std::queue<int>	freeFrames;
 	std::queue<int>	collectedFrames;
 	std::vector<QNDFrame>	pFrames;
