@@ -2,11 +2,10 @@
 // *
 // * Header file for QImage.cpp
 // *
-// * Author: Jeff Gebhardt
-// *         BCDA-AES-APS-ANL
+// * Author: Arthur Glowacki
+// *         APS-ANL
 // *
-// * Created: June 13, 2011
-// * Updated: Sep 30, 2014 Arhtur Glowacki
+// * Created: June 13, 2014
 
 
 #ifndef QIMAGE_H
@@ -30,6 +29,7 @@
 #include <iocsh.h>
 #include <epicsExit.h>
 #include <queue>
+#include <unordered_map>
 
 #include "QCamApi.h"
 #include "ADDriver.h"
@@ -41,14 +41,7 @@ static const char *driverName = "QImage";
 #define MAX_FILENAME_LEN  256
 #define MAX_ARRAY_LEN      40
 
-struct taskData {
-	unsigned long usrData;
-	QCam_Err      errorcode;
-	unsigned long flags;
-	unsigned long count;
-};
 
-// Driver for QImage detectors
 class QImage : public ADDriver {
 public:
     QImage(const char *portName, const char *model, NDDataType_t dataType, int numbuffs, int debug, int maxBuffers, size_t maxMemory, int priority, int stackSize);
@@ -59,10 +52,16 @@ public:
     virtual asynStatus writeInt32(asynUser *pasynUser, epicsInt32 value);
 	virtual asynStatus writeFloat64(asynUser *pasynUser, epicsFloat64 value);
 	virtual void report(FILE *fp, int details);
+	virtual asynStatus readEnum(asynUser *pasynUser, char *strings[], int values[], int severities[],
+		size_t nElements, size_t *nIn);
     // These are new methods
-	void exposureTask();
+	//void exposureTask();
+	void consumerTask();
 	void frameTask();
 	void shutdown(); // This is called by epicsAtExit
+
+	void pushCollectedFrame(int id);
+	void setExposureDone();
 
  protected:
   	int		qMaxBitDepthRBV;
@@ -100,6 +99,13 @@ public:
 	int		qFrmCnt;
 	int		qShowDiags;
 	int     qResetCam;
+	int		qExposureMax;
+	int		qExposureMin;
+	int		qGainMax;
+	int		qGainMin;
+	int		qBinning;
+	int		qAutoExposure;
+	int		qWhiteBalance;
 	int		qInitialize;
 	#define LAST_QIMAGE_PARAM qInitialize
 
@@ -107,20 +113,67 @@ public:
 
  private:
     // These are the methods that are new to this class
+	 
 	asynStatus resultCode(const char *funcName, const char *cmdName, QCam_Err errorcode);
 	asynStatus connectQImage();
 	asynStatus disconnectQImage();
-	asynStatus queueFrame(unsigned long frame);
-	asynStatus initializeBuffers();
+	//asynStatus queueFrame(unsigned long frame);
+	//asynStatus initializeBuffers();
 	asynStatus initializeQImage();
-	asynStatus queryQImage();
+	asynStatus queryQImageSettings();
+	
+	asynStatus initializeFrames();
+	
+	////
+	void resetFrameQueues();
+	////
+	asynStatus getCameraInfo();
+	////
+	asynStatus q_acquire(epicsInt32 value);
+	asynStatus q_setTriggerMode(epicsInt32 value);
+	asynStatus q_autoExposure(epicsInt32 value);
+	asynStatus q_whiteBalance(epicsInt32 value);
+	asynStatus q_setDataTypeAndColorMode(epicsInt32 function, epicsInt32 value);
+	asynStatus q_setImageSize(epicsInt32 function, epicsInt32 value);
+	asynStatus q_setBinning(epicsInt32 function, epicsInt32 value);
+	asynStatus q_setMinXY(epicsInt32 function, epicsInt32 value);
+	asynStatus q_resetCamera(epicsInt32 value);
+	asynStatus q_setTemperature(epicsFloat64 value);
+	asynStatus q_setCoolerActive(epicsInt32 value);
+	asynStatus q_setReadoutSpeed(epicsInt32 value);
+	////
 
-    // Our data
+
+	epicsEvent captureEvent;
+	epicsEvent captureEvent2;
+
+	//frame structure
+	struct QNDFrame
+	{
+		QCam_Frame		*qFrame;
+		NDArray			*ndArray;
+		QCam_Err		errorcode;
+		unsigned long	flags;
+		unsigned long   frameId;
+	};
+
+	// Our data
 	epicsTimeStamp  startTime;
 	epicsEventId    stopEventId;
-	NDArray         **pImage;
+	epicsEventId m_acquireEventId;
+	epicsMutex freeFrameMutex;
+	epicsMutex capFrameMutex;
+	epicsMutex aquireMutex;
+
+	//epicsMutex detectorMutex;
+
+	double camPushSleepAmt;
+	double m_exposureTime;
+
+	//std::vector<NDArray*> pImage;
+	//NDArray*		pNDArr;
 	QCam_Handle		qHandle;
-	QCam_Settings	qSettings;
+	int				adStatus;
 	int             num_buffs;
 	int             trgCnt;
 	int             expCnt;
@@ -137,12 +190,38 @@ public:
 	signed long		tempMin;
 	unsigned long   coolerReg;
 	unsigned long   rawDataSize;
-	struct {
-		QCam_Frame     *frame;
-		unsigned long  display;
-	} qFrame;
-	std::queue<taskData> exposureQueue,
-		                 frameQueue;
+	NDDataType_t	m_dataType;
+	double m_acquirePeriod;
+	double m_acquireTime;
+	int	_numImages;
+	int	_capturedFrames;
+
+	unsigned long maxWidth;
+	unsigned long maxHeight;
+
+	unsigned long binningTable[32];
+	int binningTableSize = 32;
+
+	unsigned long imageFormatTable[32];
+	int imageFormatTableSize = 32;
+	
+	unsigned long triggerType;
+
+	volatile bool _adAcquire;
+	std::queue<int>	freeFrames;
+	std::queue<int>	collectedFrames;
+	std::unordered_map<unsigned long, QNDFrame*>	pFrames;
+	unsigned long m_frameCntr;
+	size_t			m_dims[2];
+
+	asynStatus allocFrame(unsigned long &frameId);
+	asynStatus releaseFrame(unsigned long frameId);
+
+	bool exiting_;
+	bool isSettingsInit;
+
+	QCam_SettingsEx qSettings;
+
 };
 
 #define qMaxBitDepthRBVString				"MAX_BIT_DEPTH_RBV"
@@ -179,6 +258,13 @@ public:
 #define qFrmCntString					    "FRAME_COUNT_RBV"
 #define qShowDiagsString					"SHOW_DIAGS"
 #define qResetCamString						"RESET_DETECTOR"
+#define qExposureMaxString					"EXPOSURE_MAX_RBV"
+#define qExposureMinString					"EXPOSURE_MIN_RBV"
+#define qGainMaxString						"GAIN_MAX_RBV"
+#define qGainMinString						"GAIN_MIN_RBV"
+#define qBinningString						"QBINNING"
+#define qAutoExposureString					"AUTO_EXPOSURE"
+#define qWhiteBalanceString					"WHITE_BALANCE"
 #define qInitializeString					"INITIALIZE_DETECTOR"
 
 static void QImageShutdown(void* arg) {

@@ -10,11 +10,11 @@
 #include "QImaging.h"
 
 #define MAX_ENUM_STATES 16
+#define ADImageSingleFast 3
 
 static void exposureTaskC(void *drvPvt)
 {
     QImage *pPvt = (QImage *)drvPvt;
-    //pPvt->exposureTask();
 	pPvt->consumerTask();
 }
 static void frameTaskC(void *drvPvt)
@@ -27,32 +27,27 @@ void QCAMAPI QImageCallback(void* usrPtr, unsigned long frameId, QCam_Err errorc
 {
 	QImage *pPtr = (QImage *)usrPtr;
 
-	asynPrint(pPtr->pasynUserSelf, ASYN_TRACE_FLOW, "QImage Callback\n");
-
-	//
-	//pPtr->lock();
-	/*
 	if (flags & qcCallbackExposeDone) 
 	{
-		task.count = ++(pPtr->expCnt);
-		pPtr->setIntegerParam(pPtr->qExpCnt, pPtr->expCnt);
-		pPtr->callParamCallbacks();
-		pPtr->lock();
-		//pPtr->exposureQueue.push(task);
-		pPtr->unlock();
+		asynPrint(pPtr->pasynUserSelf, ASYN_TRACE_ERROR, "QImageCallback: Exposure done for frame %ld\n", frameId);
+		pPtr->setExposureDone();
 	}
-	*/
 	if (flags & qcCallbackDone) 
 	{
-		asynPrint(pPtr->pasynUserSelf, ASYN_TRACE_FLOW, "QImage Callback: frameid %d\n", frameId);
-		pPtr->pFrames[frameId].errorcode = errorcode;
-		pPtr->pFrames[frameId].flags = flags;
-		pPtr->pFrames[frameId].count = ++(pPtr->frmCnt);
-		pPtr->setIntegerParam(pPtr->qFrmCnt, pPtr->frmCnt);
-		pPtr->pushCollectedFrame(frameId);
-		pPtr->callParamCallbacks();
+		asynPrint(pPtr->pasynUserSelf, ASYN_TRACE_ERROR, "QImageCallback: Callback done for frameid %ld\n", frameId);
+
+		if (pPtr->pFrames.find(frameId) != pPtr->pFrames.end())
+		{
+			pPtr->pFrames[frameId]->errorcode = errorcode;
+			pPtr->pFrames[frameId]->flags = flags;
+			//pPtr->setIntegerParam(pPtr->qFrmCnt, pPtr->frmCnt);
+			pPtr->pushCollectedFrame(frameId);
+		}
+		else
+		{
+			asynPrint(pPtr->pasynUserSelf, ASYN_TRACE_ERROR, "\nQImageCallback: No entry in hashmap for frameid %ld\n\n", frameId);
+		}
 	}
-	//pPtr->unlock();
 }
 
 
@@ -85,6 +80,11 @@ QImage::QImage(const char *portName, const char *model, NDDataType_t ndDataType,
 	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: max buffers %d, max mem %d\n", functionName, maxBuffers, maxMemory);
 	qHandle = 0;
 	exiting_ = 0;
+	//_pushedFrames = 0;
+	_capturedFrames = 1;
+	m_frameCntr = 0;
+
+	
 
 	createParam(qMaxBitDepthRBVString, asynParamInt32, &qMaxBitDepthRBV);
 	createParam(qSerialNumberRBVString, asynParamOctet, &qSerialNumberRBV);
@@ -135,7 +135,7 @@ QImage::QImage(const char *portName, const char *model, NDDataType_t ndDataType,
 	status |= setIntegerParam(NDDataType, ndDataType);
 	status |= setIntegerParam(ADNumImages, 100);
 	status |= setIntegerParam(ADStatus, ADStatusIdle);
-	status |= setStringParam(qExposureStatusMessageRBV, "Waiting");
+	status |= setStringParam(qExposureStatusMessageRBV, "Idle");
 	status |= setStringParam(qFrameStatusMessageRBV, "Waiting");
 	status |= setIntegerParam(qTrgCnt, 0);
 	status |= setIntegerParam(qExpCnt, 0);
@@ -147,8 +147,6 @@ QImage::QImage(const char *portName, const char *model, NDDataType_t ndDataType,
 		return;
 	}
 	status |= callParamCallbacks();
-
-	camPushSleepAmt = 0.001; 
 
 	num_buffs = numbuffs;
 	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "\n\n%s: Allocating [[%d]] Buffers\n\n", functionName, numbuffs);
@@ -195,7 +193,14 @@ QImage::QImage(const char *portName, const char *model, NDDataType_t ndDataType,
 	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "\n\n%s: Allocating %d Buffers\n\n", functionName, num_buffs);
 	initializeFrames();
 
-
+	
+	m_acquireEventId = epicsEventCreate(epicsEventEmpty);
+	if (!m_acquireEventId)
+	{
+		printf("%s:%s epicsEventCreate failure for acquire event\n", driverName, functionName);
+		return;
+	}
+	
 	// Create the exposure task thread 
 	status = (epicsThreadCreate("exposureTask", epicsThreadPriorityMedium, epicsThreadGetStackSize(epicsThreadStackMedium),
 		(EPICSTHREADFUNC)exposureTaskC, this) == NULL);
@@ -268,7 +273,7 @@ asynStatus QImage::connectQImage()
 	listLen = sizeof(list)/sizeof(QCam_CamListItem);
 
 	// Start QImage
-	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: Starting Camera Initialization\n\n", functionName);
+	asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Starting Camera Initialization\n\n", functionName);
 
 	// Initialize QImage Driver
 	status |= resultCode(functionName, "QCam_LoadDriver", QCam_LoadDriver());
@@ -277,7 +282,10 @@ asynStatus QImage::connectQImage()
 	if (!status) status |= resultCode(functionName, "QCam_ListCameras", QCam_ListCameras(list, &listLen));
 
 	if (listLen < 1)
+	{
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: No cameras found!\n\n", functionName);
 		return((asynStatus)-1);
+	}
 
 	// Gets camera handle for first camera in list
 	if (!status) status |= resultCode(functionName, "QCam_OpenCamera", QCam_OpenCamera(list[0].cameraId, &qHandle));
@@ -292,7 +300,7 @@ asynStatus QImage::connectQImage()
 		resultCode(functionName, "QCam_InitializeCameraSettings", QCam_InitializeCameraSettings(qHandle, &qSettings));
 		isSettingsInit = true;
 	}
-
+	asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Query settings\n\n", functionName);
 	if (!status) status |= queryQImageSettings();
 
 	////if (!status) status |= initializeQImage();
@@ -366,121 +374,100 @@ void QImage::consumerTask()
 
 	while (!exiting_)
 	{
-		captureEvent.wait();
-		
-		getIntegerParam(ADImageMode, &imageMode);
-
 		capFrameMutex.lock();
 		int cSize = (int)collectedFrames.size();
 		capFrameMutex.unlock();
+		//asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: pre collectedFrame size = %d\n", functionName, cSize);
 
+		if (cSize == 0)
+		{
+			captureEvent.wait();
+			asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  consumer capture\n", functionName);
+			capFrameMutex.lock();
+			cSize = (int)collectedFrames.size();
+			capFrameMutex.unlock();
+		}
+		
+		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: post collectedFrame size = %d\n", functionName, cSize);
 		//check collectedFrames
-		for (int i = 0; i < cSize; i++)// (collectedFrames.size() > 0 && exiting_ == false && _adAcquire)
+		for (int i = 0; i < cSize; i++)
 		{
 			if (exiting_ != false && _adAcquire == false)
 			{
 				asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  QCam_Abort\n", functionName);
 				status |= resultCode(functionName, "QCam_Abort", QCam_Abort(qHandle));
 				asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  QCam_Abort finished\n", functionName);
+				//epicsEventSignal(m_exposureEventId);
 
 				break;
 			}
 
+
 			capFrameMutex.lock();
-			//lock collectedFrames
 			int frameId = collectedFrames.front();
 			collectedFrames.pop();
 			capFrameMutex.unlock();
 
-			asynPrint(this->pasynUserSelf, ASYN_TRACE_FLOW, "%s:%s: processing frameId %d\n", driverName, functionName, frameId);
+			asynPrint(this->pasynUserSelf, ASYN_TRACE_FLOW, "%s:%s: processing frameId %ld\n", driverName, functionName, frameId);
 
-			/*sim code
+			if (pFrames.find(frameId) == pFrames.end())
+			{
+				asynPrint(this->pasynUserSelf, ASYN_TRACE_ERROR, "%s:%s: Could not find frameId %ld in hashmap, not processing it.\n", driverName, functionName, frameId);
+				//TODO: update status
+				continue;
+			}
 
-			// Get the current parameters
-			getIntegerParam(NDArrayCounter, &imageCounter);
-			getIntegerParam(ADNumImages, &numImages);
-			getIntegerParam(ADNumImagesCounter, &numImagesCounter);
-			getIntegerParam(NDArrayCallbacks, &arrayCallbacks);
-			imageCounter++;
-			numImagesCounter++;
-			setIntegerParam(NDArrayCounter, imageCounter);
-			setIntegerParam(ADNumImagesCounter, numImagesCounter);
-
-			*/
-
+			status |= resultCode(functionName, "FrameCallback", pFrames[frameId]->errorcode);
+			aquireMutex.lock();
 			//proecess frame id
+			status |= getIntegerParam(ADImageMode, &imageMode);
 			status |= getIntegerParam(NDArrayCallbacks, &arrayCallbacks);
 			status |= getIntegerParam(NDArrayCounter, &imageCounter);
 			status |= setIntegerParam(NDArrayCounter, ++imageCounter);
-			status |= callParamCallbacks();
-			status |= resultCode(functionName, "FrameCallback", pFrames[frameId].errorcode);
+			aquireMutex.unlock();
+			//status |= callParamCallbacks();
 
-			if ((arrayCallbacks))// && (expCnt >= (int)pFrames[frameId].count))
+			if ((arrayCallbacks))
 			{
 				// Put the frame number and time stamp into the buffer
 				// Set the the start time
 				epicsTimeGetCurrent(&startTime);
-				pFrames[frameId].ndArray->uniqueId = imageCounter;
-				pFrames[frameId].ndArray->timeStamp = startTime.secPastEpoch + startTime.nsec / 1.e9;
-				//this->pImage[task.usrData]->uniqueId = imageCounter;
-				//this->pImage[task.usrData]->timeStamp = startTime.secPastEpoch + startTime.nsec / 1.e9;
+				pFrames[frameId]->ndArray->uniqueId = frameId;
+				pFrames[frameId]->ndArray->timeStamp = startTime.secPastEpoch + startTime.nsec / 1.e9;
 				// Get any attributes that have been defined for this driver
-				this->getAttributes(pFrames[frameId].ndArray->pAttributeList);
+				this->getAttributes(pFrames[frameId]->ndArray->pAttributeList);
 				// Call the NDArray callback
 				asynPrint(this->pasynUserSelf, ASYN_TRACE_FLOW, //ASYN_TRACE_FLOW
 					"%s:%s: calling NDArray callback\n", driverName, functionName);
-				status |= doCallbacksGenericPointer(pFrames[frameId].ndArray, NDArrayData, 0);
+				status |= doCallbacksGenericPointer(pFrames[frameId]->ndArray, NDArrayData, 0);
 			}
+			
+			releaseFrame(frameId);
+
+			capFrameMutex.lock();
 			_capturedFrames++;
+			cSize = (int)collectedFrames.size();
 			asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  captured %d of %d\n", functionName, _capturedFrames, _numImages);
 
-			freeFrameMutex.lock();
-			asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  pushing free frame %d\n", functionName, frameId);
-			freeFrames.push(frameId);
-			freeFrameMutex.unlock();
-
-			if ( ( (imageMode == ADImageSingle) && (_capturedFrames >= 1) ) 
+			if (((imageMode == ADImageSingle) && (_capturedFrames >= 1))
 				|| ( (imageMode == ADImageMultiple) && (_capturedFrames >= _numImages) ) )
 			{
+				capFrameMutex.unlock();
 				q_acquire(0);
 				asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  QCam_Abort\n", functionName);
 				status |= resultCode(functionName, "QCam_Abort", QCam_Abort(qHandle));
-				asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  QCam_Abort finished\n", functionName);
-
 			}
-			/*
+			else if ((imageMode == ADImageSingleFast) && (_capturedFrames >= 1) && cSize < 1)
+			{
+				asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s:  SingleFast Stop Called ------------------------------------------\n", functionName);
+				capFrameMutex.unlock();
+				q_acquire(0); //stop single fast
+			}
 			else
 			{
-				status |= resultCode(functionName, "QCam_Trigger", QCam_Trigger(qHandle));
+				capFrameMutex.unlock();
+				//status |= resultCode(functionName, "QCam_Trigger", QCam_Trigger(qHandle));
 			}
-			*/
-			/*
-			// See if acquisition is done
-			if ((imageMode == ADImageSingle) ||
-			((imageMode == ADImageMultiple) &&
-			(numImagesCounter >= numImages))) {
-
-			// First do callback on ADStatus.
-			setStringParam(ADStatusMessage, "Waiting for acquisition");
-			setIntegerParam(ADStatus, ADStatusIdle);
-			callParamCallbacks();
-
-			acquire = 0;
-			setIntegerParam(ADAcquire, acquire);
-			asynPrint(this->pasynUserSelf, ASYN_TRACE_FLOW,
-			"%s:%s: acquisition completed\n", driverName, functionName);
-			}
-			*/
-			/* not needed
-			if ((frameId >= 0) && (frameId<(unsigned long)num_buffs))
-			{
-			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "QImage frameTask call queueFrame\n");
-			if (queueFrame(task.usrData) == asynError)
-			{
-			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: ERROR: Problem Queueing New Frame\n", functionName);
-			}
-			}
-			*/
 
 		}
 	}
@@ -489,84 +476,81 @@ void QImage::consumerTask()
 void QImage::frameTask()
 {
 	int          status = asynSuccess;
-	//int          arrayCallbacks, imageCounter;
 	const char   *functionName = "frameTask";
 	int imageMode;
-
-	bool procCollect;
-	bool procAcquire;
-	/*
-	while (isInitialized == false)
-	{
-		epicsThreadSleep(0.01);
-	}
-	asynPrint(this->pasynUserSelf, ASYN_TRACE_ERROR, "%s:%s: initialization finished. Frame task starting\n", driverName, functionName);
-	*/
+	unsigned long frameId;
+	int pushedFrames;
+	
 	while (!exiting_)
-	{
-		procCollect = false;
-		procAcquire = false;
-		
+	{		
 
+		epicsEventWait(m_acquireEventId);
+		//reset counter;
 		getIntegerParam(ADImageMode, &imageMode);
-		
-		if (_adAcquire)
+		pushedFrames = 0;
+		while (_adAcquire)
 		{
-			freeFrameMutex.lock();
-			if (freeFrames.size() > 0)
+
+			if (imageMode == ADImageSingleFast)
 			{
-				if ( ( (imageMode == ADImageSingle) && (_pushedFrames < 1) )
-					|| ( (imageMode == ADImageMultiple) && (_pushedFrames < _numImages) )
-					|| imageMode == ADImageContinuous)
-				{
-					//freeFrameMutex.lock();
-					int frameId = freeFrames.front();
-					asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  pop free frame %d\n", functionName, frameId);
-					freeFrames.pop();
-					freeFrameMutex.unlock();
-					asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: Calling QCam_QueueFrame for frameId %d\n", functionName, frameId);
-					//status |= resultCode(functionName, "QCam_QueueFrame", QCam_QueueFrame(qHandle, pFrames[frameId].qFrame, QImageCallback, qcCallbackDone | qcCallbackExposeDone, this, frameId));
-					
-					status |= resultCode(functionName, "QCam_QueueFrame", QCam_QueueFrame(qHandle, pFrames[frameId].qFrame, QImageCallback, qcCallbackDone, this, frameId));
-					if (triggerType == qcTriggerSoftware)
-						status |= resultCode(functionName, "QCam_Trigger", QCam_Trigger(qHandle));
-					
-					// After frame #1, we queue settings #2.
-					//pSettings = (frame == 2) ? &m_settings.expFlip1 : &m_settings.expFlip2;
-					//status |= resultCode(functionName, "QCam_QueueSettings", QCam_QueueSettings(qHandle, (QCam_Settings*)&qSettings, QImageCallback, qcCallbackDone, this, frameId));
-					_pushedFrames++;
-					/*
-					if (imageMode == ADImageSingle || ((imageMode == ADImageMultiple) && _pushedFrames >= _numImages))
-					{
-					_adAcquire = false;
-					}
-					*/
-				}
-				else
-				{
-					freeFrameMutex.unlock();
-					if (triggerType == qcTriggerSoftware)
-					{
-						status |= resultCode(functionName, "QCam_Trigger", QCam_Trigger(qHandle));
-					}
-					epicsThreadSleep(camPushSleepAmt);
-				}
-				procAcquire = true;
+				asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s:  waiting fast single\n", functionName);
+				captureEvent2.wait();
+
+				aquireMutex.lock();
+				setStringParam(qExposureStatusMessageRBV, "Readout");
+				setIntegerParam(ADStatus, ADStatusReadout);
+				aquireMutex.unlock();
+				callParamCallbacks();
 			}
 			else
 			{
-				freeFrameMutex.unlock();
-				if (triggerType == qcTriggerSoftware)
+				
+				if (((imageMode == ADImageSingle) && (pushedFrames < 1))
+					|| ((imageMode == ADImageMultiple) && (pushedFrames < _numImages))
+					|| (imageMode == ADImageContinuous))
 				{
-					status |= resultCode(functionName, "QCam_Trigger", QCam_Trigger(qHandle));
-				}
-				epicsThreadSleep(camPushSleepAmt);
-			}
+					if (allocFrame(frameId) == asynSuccess)
+					{
+						pushedFrames++;
+						asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: Calling QCam_QueueFrame for frameId %ld\n", functionName, frameId);
 
-		}
-		if (false == _adAcquire && false == procCollect && false == procAcquire)
-		{
-			epicsThreadSleep(camPushSleepAmt);
+						status |= resultCode(functionName, "QCam_QueueFrame", QCam_QueueFrame(qHandle, pFrames[frameId]->qFrame, QImageCallback, qcCallbackDone | qcCallbackExposeDone, this, frameId));
+						if (triggerType == qcTriggerSoftware)
+						{
+							asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s:  software trigger, \n", functionName);
+							status |= resultCode(functionName, "QCam_Trigger", QCam_Trigger(qHandle));
+							aquireMutex.lock();
+							setStringParam(qExposureStatusMessageRBV, "Exposure");
+							//setIntegerParam(ADStatus, ADStatusAcquire);
+							aquireMutex.unlock();
+							//callParamCallbacks();
+						}
+
+						//wait for capture signal
+						captureEvent2.wait();
+						aquireMutex.lock();
+						setStringParam(qExposureStatusMessageRBV, "Readout");
+						aquireMutex.unlock();
+						//callParamCallbacks();
+						double delay = m_acquirePeriod - m_exposureTime;
+						if (delay > 0.0)
+						{
+							asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  sleeping %f\n", functionName, delay);
+							epicsEventWaitWithTimeout(this->stopEventId, delay);
+						}
+					}
+					else
+					{
+						asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s:  Stopping acquire because of frame error\n", functionName);
+						q_acquire(0);
+					}
+				}
+				else
+				{
+					asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s:  Sleep time\n", functionName);
+					epicsEventWaitWithTimeout(this->stopEventId, 1.000);
+				}
+			}
 		}
 	}
 }
@@ -574,8 +558,6 @@ void QImage::frameTask()
 asynStatus QImage::initializeFrames()
 {
 	int				status = asynSuccess;
-	size_t			dims[2] = { 2048, 2048 };
-	NDDataType_t	dataType = NDUInt8;
 	//int colorMode;
 	int minX, sizeX;
 	int minY, sizeY;
@@ -600,114 +582,73 @@ asynStatus QImage::initializeFrames()
 	sizeX = (int)(roiWidth);
 	sizeY = (int)(roiHeight);
 	
-	dims[0] = sizeX;
-	dims[1] = sizeY;
+	m_dims[0] = sizeX;
+	m_dims[1] = sizeY;
 	
 	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: minX = %d, minY = %d, sizeX = %d, sizeY = %d, roiW %u, roiH %u, bin %u \n\n", functionName, minX, minY, sizeX, sizeY, roiWidth, roiHeight, binVal);
-	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: dim[0] = %u, dim[1] = %u \n\n", functionName, dims[0], dims[1]);
+	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: dim[0] = %u, dim[1] = %u \n\n", functionName, m_dims[0], m_dims[1]);
 
 	switch (imageFormat)
 	{
 	case qfmtMono8:
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  getting camera color mode mono 8\n", functionName);
-		dataType = NDUInt8;
-		rawDataSize = (unsigned long)(dims[0] * dims[1] * sizeof(epicsUInt8));
+		m_dataType = NDUInt8;
+		rawDataSize = (unsigned long)(m_dims[0] * m_dims[1] * sizeof(epicsUInt8));
 		break;
 	case qfmtBayer8:
-		dataType = NDUInt8;
+		m_dataType = NDUInt8;
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  getting camera color mode bayer 8\n", functionName);
-		rawDataSize = (unsigned long)(dims[0] * dims[1] * sizeof(epicsUInt8));
+		rawDataSize = (unsigned long)(m_dims[0] * m_dims[1] * sizeof(epicsUInt8));
 		break;
 	case qfmtRgbPlane8:
-		dataType = NDUInt8;
+		m_dataType = NDUInt8;
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  getting camera color mode rgb 8\n", functionName);
-		rawDataSize = (unsigned long)(dims[0] * dims[1] * sizeof(epicsUInt8));
+		rawDataSize = (unsigned long)(m_dims[0] * m_dims[1] * sizeof(epicsUInt8));
 		break;
 	case qfmtMono16:
-		dataType = NDUInt16;
+		m_dataType = NDUInt16;
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  getting camera color mode mono 16\n", functionName);
-		rawDataSize = (unsigned long)(dims[0] * dims[1] * sizeof(epicsUInt16));
+		rawDataSize = (unsigned long)(m_dims[0] * m_dims[1] * sizeof(epicsUInt16));
 		break;
 	case qfmtBayer16:
-		dataType = NDUInt16;
+		m_dataType = NDUInt16;
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  getting camera color mode bayer 16\n", functionName);
-		rawDataSize = (unsigned long)(dims[0] * dims[1] * sizeof(epicsUInt16));
+		rawDataSize = (unsigned long)(m_dims[0] * m_dims[1] * sizeof(epicsUInt16));
 		break;
 	case qfmtRgbPlane16:
-		dataType = NDUInt16;
+		m_dataType = NDUInt16;
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  getting camera color mode rgb 16\n", functionName);
-		rawDataSize = (unsigned long)(dims[0] * dims[1] * sizeof(epicsUInt16));
+		rawDataSize = (unsigned long)(m_dims[0] * m_dims[1] * sizeof(epicsUInt16));
 		break;
 	case qfmtBgr24:
-		dataType = NDUInt32;
+		m_dataType = NDUInt32;
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  getting camera color mode bgr 24\n", functionName);
-		rawDataSize = (unsigned long)(dims[0] * dims[1] * sizeof(epicsUInt32));
+		rawDataSize = (unsigned long)(m_dims[0] * m_dims[1] * sizeof(epicsUInt32));
 		break;
 	case qfmtRgb24:
-		dataType = NDUInt32;
+		m_dataType = NDUInt32;
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  getting camera color mode rgb 24\n", functionName);
-		rawDataSize = (unsigned long)(dims[0] * dims[1] * sizeof(epicsUInt32));
+		rawDataSize = (unsigned long)(m_dims[0] * m_dims[1] * sizeof(epicsUInt32));
 		break;
 	case qfmtXrgb32:
-		dataType = NDUInt32;
+		m_dataType = NDUInt32;
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  getting camera color mode xrgb 32\n", functionName);
-		rawDataSize = (unsigned long)(dims[0] * dims[1] * sizeof(epicsUInt32));
+		rawDataSize = (unsigned long)(m_dims[0] * m_dims[1] * sizeof(epicsUInt32));
 	case qfmtBgrx32:
-		dataType = NDUInt32;
+		m_dataType = NDUInt32;
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  getting camera color mode bgrx 32\n", functionName);
-		rawDataSize = (unsigned long)(dims[0] * dims[1] * sizeof(epicsUInt32));
+		rawDataSize = (unsigned long)(m_dims[0] * m_dims[1] * sizeof(epicsUInt32));
 		break;
 	case qfmtRgb48:
-		dataType = NDFloat64;
+		m_dataType = NDFloat64;
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  getting camera color mode rgb 48\n", functionName);
-		rawDataSize = (unsigned long)(dims[0] * dims[1] * sizeof(epicsFloat64));
+		rawDataSize = (unsigned long)(m_dims[0] * m_dims[1] * sizeof(epicsFloat64));
 		break;
 	default:
 		rawDataSize = -1;
 		break;
 	}
-
-	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: num_buffs = %d \n\n", functionName, num_buffs);
-	if (pFrames.size() == num_buffs)
-	{
-		for (int i = 0; i < num_buffs; i++)
-		{
-			asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: Deallocate NDArray[%d] \n\n", functionName, i);
-			pFrames[i].ndArray->release();
-			asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: Attepting to allocate NDArray[%d]: %u x %u \n\n", functionName, i, dims[0], dims[1]);
-			pFrames[i].ndArray = pNDArrayPool->alloc(2, (size_t*)dims, dataType, 0, NULL);
-			pFrames[i].qFrame->bufferSize = rawDataSize;
-			pFrames[i].qFrame->pBuffer = pFrames[i].ndArray->pData;
-		}
-	}
-	else
-	{
-		freeFrameMutex.lock();
-		for (int i = 0; i < num_buffs; i++)
-		{
-			QNDFrame frame;
-			asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: Attepting to allocate NDArray[%d]: %u x %u \n\n", functionName, i, dims[0], dims[1]);
-			frame.ndArray = pNDArrayPool->alloc(2, (size_t*)dims, dataType, 0, NULL);
-			if (frame.ndArray)
-			{
-				frame.qFrame = new QCam_Frame();
-				frame.qFrame->bufferSize = rawDataSize;
-				frame.qFrame->pBuffer = frame.ndArray->pData;
-				pFrames.push_back(frame);
-				asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  pushing free frame %d\n", functionName, i);
-				freeFrames.push(i);
-			}
-			else
-			{
-				asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: ERROR allocating frame buffer from NDArrayPool\n\n", functionName);
-				return asynError;
-			}
-		}
-		freeFrameMutex.unlock();
-	}
-	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: frame buffer initialized\n", functionName);
-
-
+	
 	status |= setIntegerParam(ADMinX, minX);
 	status |= setIntegerParam(ADMinY, minY);
 	status |= setIntegerParam(NDArraySizeX, sizeX);
@@ -716,11 +657,56 @@ asynStatus QImage::initializeFrames()
 	status |= setIntegerParam(ADSizeY, sizeY);
 	status |= setIntegerParam(qImageFormat, imageFormat);
 	status |= setIntegerParam(NDArraySize, rawDataSize); 
-	status |= setIntegerParam(NDDataType, dataType);
+	status |= setIntegerParam(NDDataType, m_dataType);
 	status |= callParamCallbacks();
 
 	return((asynStatus)status);
 
+}
+
+asynStatus QImage::allocFrame(unsigned long &frameId)
+{
+	const char    *functionName = "allocFrame";
+	QNDFrame *frame = new QNDFrame;
+	asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Attempting to allocate NDArray: %u x %u\n", functionName, m_dims[0], m_dims[1]);
+	frame->ndArray = pNDArrayPool->alloc(2, (size_t*)m_dims, m_dataType, 0, NULL);
+	if (frame->ndArray)
+	{
+		frame->qFrame = new QCam_Frame();
+		frame->qFrame->bufferSize = rawDataSize;
+		frame->qFrame->pBuffer = frame->ndArray->pData;
+
+		frameId = ++m_frameCntr;
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s:  pushing free frame %ld\n", functionName, frameId);
+
+		freeFrameMutex.lock();
+		pFrames[frameId] = frame;
+		freeFrameMutex.unlock();
+	}
+	else
+	{
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: ERROR allocating frame buffer from NDArrayPool\n\n", functionName);
+		delete frame;
+		return asynError;
+	}
+
+	return asynSuccess;
+}
+
+
+asynStatus QImage::releaseFrame(unsigned long frameId)
+{
+	const char    *functionName = "releaseFrame";
+	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: Deallocate frameId %ld \n\n", functionName, frameId);
+	freeFrameMutex.lock();
+	QNDFrame *frame = pFrames[frameId];
+	frame->ndArray->release();
+	delete frame->qFrame;
+	delete frame;
+	pFrames.erase(frameId);
+	freeFrameMutex.unlock();
+
+	return asynSuccess;
 }
 
 asynStatus QImage::initializeQImage()
@@ -746,35 +732,110 @@ asynStatus QImage::initializeQImage()
 		status |= callParamCallbacks();
 	}
 	if (!status) status |= resultCode(functionName, "QCam_ReadSettingsFromCam", QCam_ReadSettingsFromCam(qHandle, (QCam_Settings*)&qSettings));
-
-	if (!status) status |= getDoubleParam(ADAcquireTime, &dvalue);
-	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmExposure)", QCam_SetParam((QCam_Settings*)&qSettings, qprmExposure, (unsigned long)(dvalue*1e6)));
-	if (!status) status |= getDoubleParam(ADGain, &dvalue);
-	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmNormalizedGain)", QCam_SetParam((QCam_Settings*)&qSettings, qprmNormalizedGain, (unsigned long)(dvalue*1e6)));
-	if (!status) status |= getIntegerParam(qOffset, (int *)&svalue);
-	if (!status) status |= resultCode(functionName, "QCam_SetParamS32(qprmS32AbsoluteOffset)", QCam_SetParamS32((QCam_Settings*)&qSettings, qprmS32AbsoluteOffset, svalue));
-	if (!status) status |= getIntegerParam(qImageFormat, (int *)&uvalue);
-	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "\n-----\n%s: Querying Image type %d\n-----\n", functionName, uvalue);
-	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmImageFormat)", QCam_SetParam((QCam_Settings*)&qSettings, qprmImageFormat, uvalue));
-	if (!status) status |= getIntegerParam(ADTriggerMode, &ivalue);
-	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmTriggerType)", QCam_SetParam((QCam_Settings*)&qSettings, qprmTriggerType, ivalue));
-	if (!status) status |= getIntegerParam(qReadoutSpeed, &ivalue);
-	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmReadoutSpeed)", QCam_SetParam((QCam_Settings*)&qSettings, qprmReadoutSpeed, ivalue));
-	if (!status) status |= getIntegerParam(ADMinX, (int *)&uvalue);
-	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmRoiX)", QCam_SetParam((QCam_Settings*)&qSettings, qprmRoiX, uvalue));
-	if (!status) status |= getIntegerParam(ADMinY, (int *)&uvalue);
-	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmRoiY)", QCam_SetParam((QCam_Settings*)&qSettings, qprmRoiY, uvalue));
-	if (!status) status |= getIntegerParam(ADSizeX, (int *)&uvalue);
-	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmRoiWidth)", QCam_SetParam((QCam_Settings*)&qSettings, qprmRoiWidth, uvalue));
-	if (!status) status |= getIntegerParam(ADSizeY, (int *)&uvalue);
-	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmRoiHeight)", QCam_SetParam((QCam_Settings*)&qSettings, qprmRoiHeight, uvalue));
-	if (!status) status |= resultCode(functionName, "QCam_GetParam(qprmCoolerActive)", QCam_GetParam((QCam_Settings*)&qSettings, qprmCoolerActive, &uvalue));
-	if (uvalue)
+	if (status)
 	{
-		if (coolerReg)
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Getting settings from detector\n", functionName);
+		return(asynError);
+	}
+
+	getDoubleParam(ADAcquirePeriod, &m_acquirePeriod);
+	getDoubleParam(ADAcquireTime, &m_exposureTime);
+
+	if (resultCode(functionName, "QCam_SetParam(qprmExposure)", QCam_SetParam((QCam_Settings*)&qSettings, qprmExposure, (unsigned long)(m_exposureTime*1e6))))
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to set exposure time on detector\n", functionName);
+	
+	if(getDoubleParam(ADGain, &dvalue))
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to get gain from epics\n", functionName); 
+	else
+	{
+		if( resultCode(functionName, "QCam_SetParam(qprmNormalizedGain)", QCam_SetParam((QCam_Settings*)&qSettings, qprmNormalizedGain, (unsigned long)(dvalue*1e6))) )
+			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to set gain on detector\n", functionName);
+	}
+
+	if (getIntegerParam(qOffset, (int *)&svalue))
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to get offset from epics\n", functionName);
+	else
+	{
+		if( resultCode(functionName, "QCam_SetParamS32(qprmS32AbsoluteOffset)", QCam_SetParamS32((QCam_Settings*)&qSettings, qprmS32AbsoluteOffset, svalue)) )
+			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to set offset on detector\n", functionName);
+	}
+
+	if( getIntegerParam(qImageFormat, (int *)&uvalue) )
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to get ImageFormat from epics\n", functionName);
+	else
+	{
+		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "\n-----\n%s: Querying Image type %d\n-----\n", functionName, uvalue);
+		if (resultCode(functionName, "QCam_SetParam(qprmImageFormat)", QCam_SetParam((QCam_Settings*)&qSettings, qprmImageFormat, uvalue)))
+			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to set ImageFormat on detector\n", functionName);
+	}
+
+	if( getIntegerParam(ADTriggerMode, &ivalue) )
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to get TriggerMode from epics\n", functionName);
+	else
+	{
+		if (resultCode(functionName, "QCam_SetParam(qprmTriggerType)", QCam_SetParam((QCam_Settings*)&qSettings, qprmTriggerType, ivalue)))
+			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to set TriggerMode on detector\n", functionName);
+	}
+
+	if( getIntegerParam(qReadoutSpeed, &ivalue) )
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to get ReadoutSpeed from epics\n", functionName);
+	else
+	{
+		if (resultCode(functionName, "QCam_SetParam(qprmReadoutSpeed)", QCam_SetParam((QCam_Settings*)&qSettings, qprmReadoutSpeed, ivalue)))
+			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to set ReadoutSpeed on detector\n", functionName);
+	}
+
+	
+	//if (resultCode(functionName, "QCam_SetParam(qprmSyncb)", QCam_SetParam((QCam_Settings*)&qSettings, qprmSyncb, qcSyncbExpose)))
+	//	asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to set CCDClearingMode on detector\n", functionName);
+
+	
+	//if( resultCode(functionName, "QCam_SetParam(qprmCCDClearingMode)", QCam_SetParam((QCam_Settings*)&qSettings, qprmCCDClearingMode, qcPreFrameClearing)) )
+	//	asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to set CCDClearingMode on detector\n", functionName);
+
+	if (getIntegerParam(ADMinX, (int *)&uvalue) )
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to get MinX from epics\n", functionName);
+	else
+	{
+		if( resultCode(functionName, "QCam_SetParam(qprmRoiX)", QCam_SetParam((QCam_Settings*)&qSettings, qprmRoiX, uvalue)) )
+			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to set MinX on detector\n", functionName);
+	}
+
+	if( getIntegerParam(ADMinY, (int *)&uvalue) )
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to get MinY from epics\n", functionName);
+	else
+	{
+		if( resultCode(functionName, "QCam_SetParam(qprmRoiY)", QCam_SetParam((QCam_Settings*)&qSettings, qprmRoiY, uvalue)) )
+			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to set MinY on detector\n", functionName);
+	}
+
+	if( getIntegerParam(ADSizeX, (int *)&uvalue) )
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to get SizeX from epics\n", functionName);
+	else
+	{
+		if( resultCode(functionName, "QCam_SetParam(qprmRoiWidth)", QCam_SetParam((QCam_Settings*)&qSettings, qprmRoiWidth, uvalue)) )
+			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to set SizeX on detector\n", functionName);
+	}
+	
+	if( getIntegerParam(ADSizeY, (int *)&uvalue) )
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to get SizeY from epics\n", functionName);
+	else
+	{
+		if( resultCode(functionName, "QCam_SetParam(qprmRoiHeight)", QCam_SetParam((QCam_Settings*)&qSettings, qprmRoiHeight, uvalue)) )
+			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to set SizeY on detector\n", functionName);
+	}
+	
+	if( resultCode(functionName, "QCam_GetParam(qprmCoolerActive)", QCam_GetParam((QCam_Settings*)&qSettings, qprmCoolerActive, &uvalue)) )
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Failed to get CoolerActive from detector\n", functionName);
+	else
+	{
+		if (uvalue)
 		{
-			if (!status) status |= getDoubleParam(ADTemperature, &dvalue);
-			if (!status) status |= resultCode(functionName, "QCam_SetParamS32(qprmS32RegulatedCoolingTemp)", QCam_SetParamS32((QCam_Settings*)&qSettings, qprmS32RegulatedCoolingTemp, (signed long)dvalue));
+			if (coolerReg)
+			{
+				if (!status) status |= getDoubleParam(ADTemperature, &dvalue);
+				if (!status) status |= resultCode(functionName, "QCam_SetParamS32(qprmS32RegulatedCoolingTemp)", QCam_SetParamS32((QCam_Settings*)&qSettings, qprmS32RegulatedCoolingTemp, (signed long)dvalue));
+			}
 		}
 	}
 
@@ -798,11 +859,11 @@ asynStatus QImage::initializeQImage()
 	*/
 	expSntl = 1;
 	trgCnt = expCnt = frmCnt = 0;
-	status |= setIntegerParam(qTrgCnt, trgCnt);
-	status |= setIntegerParam(qExpCnt, expCnt);
-	status |= setIntegerParam(qFrmCnt, frmCnt);
-	status |= setIntegerParam(ADStatus, ADStatusIdle);
-	status |= callParamCallbacks();
+	setIntegerParam(qTrgCnt, trgCnt);
+	setIntegerParam(qExpCnt, expCnt);
+	setIntegerParam(qFrmCnt, frmCnt);
+	setIntegerParam(ADStatus, ADStatusIdle);
+	callParamCallbacks();
 
 	if (status)
 	{
@@ -821,6 +882,8 @@ void QImage::shutdown()
 {
 	const char *functionName = "shutdown";
 	exiting_ = 1;
+	_adAcquire = false;
+	epicsEventSignal(m_acquireEventId);
 	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: Shutting down the IOC\n", functionName);
 	if (disconnectQImage() != asynSuccess) {
 		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: ERROR: Unable to Disconnect Detector\n", functionName);
@@ -831,6 +894,7 @@ void QImage::shutdown()
 		collectedFrames.pop();
 
 	captureEvent.signal();
+	captureEvent2.signal();
 }
 
 asynStatus QImage::disconnectQImage()
@@ -884,10 +948,22 @@ asynStatus QImage::disconnectQImage()
 void QImage::pushCollectedFrame(int id)
 {
 	capFrameMutex.lock();
-	asynPrint(this->pasynUserSelf, ASYN_TRACE_FLOW, "%s: pushing frameId %d\n", driverName, id);
+	//asynPrint(this->pasynUserSelf, ASYN_TRACE_FLOW, "%s: pushing frameId %d\n", driverName, id);
 	collectedFrames.push(id);
 	capFrameMutex.unlock();
 	captureEvent.signal();
+}
+
+void QImage::setExposureDone()
+{
+	captureEvent2.signal();
+	/*
+	aquireMutex.lock();
+	setStringParam(qExposureStatusMessageRBV, "Readout");
+	setIntegerParam(ADStatus, ADStatusReadout);
+	aquireMutex.unlock();
+	*/
+	//callParamCallbacks();
 }
 
 asynStatus QImage::queryQImageSettings()
@@ -1057,7 +1133,8 @@ asynStatus QImage::queryQImageSettings()
 
 	////////////
 
-
+	//status |= setDoubleParam(ADAcquirePeriodRBV, uvalue / 1.0e6);
+	//status |= setDoubleParam(ADAcquirePeriod, uvalue / 1.0e6);
 	status |= resultCode(functionName, "QCam_GetParam(qprmExposure)", QCam_GetParam((QCam_Settings*)&qSettings, qprmExposure, &uvalue));
 	status |= setDoubleParam(qAcquireTimeRBV, uvalue / 1.0e6);
 	status |= setDoubleParam(ADAcquireTime, uvalue / 1.0e6);
@@ -1141,26 +1218,77 @@ asynStatus QImage::queryQImageSettings()
 asynStatus QImage::q_acquire(epicsInt32 value)
 {
 	epicsInt32 status = asynSuccess;
-	int	tMode, eventStatus;
+	int	tMode, iMode;
+	static int cntr = 0;
 
 	const char     *functionName = "q_acquire";
 
 	status |= getIntegerParam(ADStatus, &adStatus);
 	status |= getIntegerParam(ADTriggerMode, &tMode);
-	if (value)
+	status |= getIntegerParam(ADImageMode, &iMode);
+
+	//aquireMutex.lock();
+
+	if (value == 1)
 	{
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  acquire called\n", functionName);
 
-		_pushedFrames = 0;
-		_capturedFrames = 0;
-		status |= getIntegerParam(ADNumImages, &_numImages);
-
-		if (adStatus == ADStatusIdle || _adAcquire == false)
+		if (tMode == qcTriggerSoftware && iMode == ADImageSingleFast)
 		{
-			resetFrameQueues();
+			//char DetState[256] = { 0 };
+			//status |= getStringParam(qExposureStatusMessageRBV, 256, &DetState[0]);
+			//getIntegerParam(ADStatus, &DetectorStatus);
+			//if (ADStatusExposure != DetectorStatus)
+			//if (strstr(DetState, "Exposure") == 0)
+			//{
+				asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  Calling SingleFast\n", functionName);
 
+				capFrameMutex.lock();
+				_capturedFrames--;
+				capFrameMutex.unlock();
+
+				_adAcquire = true;
+				epicsEventSignal(m_acquireEventId);
+
+				unsigned long frameId = 0;
+				if (allocFrame(frameId) == asynSuccess)
+				{
+					status |= resultCode(functionName, "QCam_QueueFrame", QCam_QueueFrame(qHandle, pFrames[frameId]->qFrame, QImageCallback, qcCallbackDone | qcCallbackExposeDone, this, frameId));
+					asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s:  software trigger, \n", functionName);
+					status |= resultCode(functionName, "QCam_Trigger", QCam_Trigger(qHandle));
+					setStringParam(qExposureStatusMessageRBV, "Exposure");
+					setIntegerParam(ADStatus, ADStatusAcquire);
+					callParamCallbacks();
+				}
+				else
+				{
+					asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s:  Cannot call SingleFast without frame! \n", functionName);
+				}
+			//}
+		}
+		else if (tMode != qcTriggerSoftware && iMode == ADImageSingleFast)
+		{
+			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s:  Cannot call SingleFast in hardware trigger mode! \n", functionName);
+			aquireMutex.lock();
+			status |= setIntegerParam(ADStatus, ADStatusIdle);
+			status |= setIntegerParam(ADAcquire, 0);
+			setStringParam(qExposureStatusMessageRBV, "Idle");
+			aquireMutex.unlock();
+			status = asynError;
+		}
+		else if (adStatus == ADStatusIdle || _adAcquire == false)
+		{
+			asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  acquire idle\n", functionName);
+			status |= getIntegerParam(ADNumImages, &_numImages);
+
+			//resetFrameQueues();
+			capFrameMutex.lock();
+			_capturedFrames = 0;
+			capFrameMutex.unlock();
+			
 			_adAcquire = true;
-			status |= setStringParam(qExposureStatusMessageRBV, "Waiting");
+			aquireMutex.lock();
+			status |= setStringParam(qExposureStatusMessageRBV, "Idle");
 			status |= setStringParam(qFrameStatusMessageRBV, "Waiting");
 			trgCnt = expCnt = frmCnt = 0;
 			status |= setIntegerParam(ADStatus, ADStatusAcquire);
@@ -1168,39 +1296,82 @@ asynStatus QImage::q_acquire(epicsInt32 value)
 			status |= setIntegerParam(qExpCnt, expCnt);
 			status |= setIntegerParam(qFrmCnt, frmCnt);
 			status |= setIntegerParam(ADNumImagesCounter, 0);
+			aquireMutex.unlock();
+			/*
 			eventStatus = epicsEventTryWait(this->stopEventId);
 			if (eventStatus == epicsEventWaitOK)
 				asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: stopEvent cleared\n", functionName);
+				*/
 			if (tMode == qcTriggerSoftware)
 			{
-				asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  cam trigger called\n", functionName);
-				status |= resultCode(functionName, "QCam_Trigger", QCam_Trigger(qHandle));
+				asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  acquire software\n", functionName);
+
+				//asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  cam trigger called\n", functionName);
+				//status |= resultCode(functionName, "QCam_Trigger", QCam_Trigger(qHandle));
 				trgCnt++;
 				status |= setIntegerParam(qTrgCnt, trgCnt);
 			}
+			epicsEventSignal(m_acquireEventId);
 		}
 		else
-			asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  Camera already acquiring\n", functionName);
+		{
+			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s:  Camera already acquiring\n", functionName);
+		}
 	}
-	else
+	/*
+	else if (value == 2) //stop by single fast
 	{
 		_adAcquire = false;
 		
+		captureEvent2.signal();
+		aquireMutex.lock();
+		status |= setIntegerParam(ADStatus, ADStatusIdle);
+		status |= setIntegerParam(ADAcquire, 0);
+		setStringParam(qExposureStatusMessageRBV, "Idle");
+		aquireMutex.unlock();
+	}
+	*/
+	else
+	{
+		_adAcquire = false;
+//		resetFrameQueues();
+		captureEvent2.signal();
+		epicsEventWaitWithTimeout(this->stopEventId, 0.001);
+		//reset if frame thread was not waiting for it.
+
 		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  acquire stop called\n", functionName);
 		// This was a command to stop acquisition 
 		// Send the stop event 
 		if (tMode == qcTriggerSoftware)
+		{
 			epicsEventSignal(this->stopEventId);
-
+			//reset stop signal
+			epicsEventWaitWithTimeout(this->stopEventId, 0);
+		}
 		if (triggerType != qcTriggerSoftware)
 		{
+			asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s:  acquire stop calling abort\n", functionName);
 			status |= resultCode(functionName, "QCam_Abort", QCam_Abort(qHandle));
 		}
 		
+		captureEvent2.wait(0);
+
+		//reset captured frame count 
+		capFrameMutex.lock();
+		if (_capturedFrames < 1)
+			_capturedFrames = 1;
+		capFrameMutex.unlock();
+
+		aquireMutex.lock();
 		//clear queues
 		status |= setIntegerParam(ADStatus, ADStatusIdle);
 		status |= setIntegerParam(ADAcquire, 0);
+		setStringParam(qExposureStatusMessageRBV, "Idle");
+		aquireMutex.unlock();
+
 	}
+
+	//aquireMutex.unlock();
 
 	status |= callParamCallbacks();
 
@@ -1271,6 +1442,7 @@ void QImage::resetFrameQueues()
 	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  QCam_Abort finished\n", functionName);
 
 	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  clearing captured frames\n", functionName);
+	/*
 	capFrameMutex.lock();
 	for (int j = 0; j < collectedFrames.size(); j++)
 	{
@@ -1278,8 +1450,9 @@ void QImage::resetFrameQueues()
 	}
 	capFrameMutex.unlock();
 	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  cleared collected frames\n", functionName);
-	freeFrameMutex.lock();
+	//freeFrameMutex.lock();
 	asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s:  clearing free frames\n", functionName);
+	
 	int cnt = (int)freeFrames.size();
 	for (int j = 0; j < cnt; j++)
 	{
@@ -1292,9 +1465,15 @@ void QImage::resetFrameQueues()
 		freeFrames.push(i);
 	}
 	freeFrameMutex.unlock();
-
-	_pushedFrames = 0;
+*/
+	//freeFrameMutex.lock();
+	//_pushedFrames = 0;
+	//freeFrameMutex.unlock();
+	capFrameMutex.lock();
 	_capturedFrames = 0;
+	capFrameMutex.unlock();
+
+	
 }
 
 asynStatus QImage::q_setBinning(epicsInt32 function, epicsInt32 value)
@@ -1407,7 +1586,7 @@ asynStatus QImage::q_setMinXY(epicsInt32 function, epicsInt32 value)
 
 	if (value < 0)
 	{
-		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Error! Cannot have min less than 0\n", functionName, camVal, value);
+		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Error! Cannot have min less than 0\n", functionName);
 		return asynError;
 	}
 
@@ -1576,22 +1755,16 @@ asynStatus QImage::q_setReadoutSpeed(epicsInt32 value)
 
 	if (!status) status |= resultCode(functionName, "QCam_ReadSettingsFromCam", QCam_ReadSettingsFromCam(qHandle, (QCam_Settings*)&qSettings));
 	
-	if ((value != 0) && (value != 1))
-	{
-		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Invalid Readout Speed\n", functionName);
-		status |= setIntegerParam(qReadoutSpeed, 1);
-		return asynError;
-	}
-
-	if (!status) status |= getIntegerParam(qReadoutSpeed, &ivalue);
-	uvalue = ivalue;
+	uvalue = value;
+	
 	if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmReadoutSpeed)", QCam_SetParam((QCam_Settings*)&qSettings, qprmReadoutSpeed, uvalue));
 	if (!status) status |= resultCode(functionName, "QCam_SendSettingsToCam", QCam_SendSettingsToCam(qHandle, (QCam_Settings*)&qSettings));
 
 	//check settings
 	if (!status) status |= resultCode(functionName, "QCam_ReadSettingsFromCam", QCam_ReadSettingsFromCam(qHandle, (QCam_Settings*)&qSettings));
 	if (!status) status |= resultCode(functionName, "QCam_GetParam(qprmCoolerActive)", QCam_GetParam((QCam_Settings*)&qSettings, qprmCoolerActive, &uvalue));
-	if (!status) status |= setIntegerParam(qReadoutSpeed, uvalue);
+	ivalue = uvalue;
+	if (!status) status |= setIntegerParam(qReadoutSpeed, value);
 
 	return((asynStatus)status);
 }
@@ -1641,21 +1814,17 @@ asynStatus QImage::readEnum(asynUser *pasynUser,
 							size_t nElements,
 							size_t *nIn)
 {
-	int i;
-	int enumCount;
 	char enumString[64];
 	int status = asynSuccess;
 	static const char *functionName = "readEnum";
 	unsigned long Table[32];
 	int TableSize = 32;
 
-	*nIn = 0;
-
 	status |= resultCode(functionName, "QCam_ReadSettingsFromCam", QCam_ReadSettingsFromCam(qHandle, (QCam_Settings*)&qSettings));
-
-	if (pasynUser->reason == qBinning)
+	
+	if (!status && pasynUser->reason == qBinning)
 	{
-
+		*nIn = 0;
 		QCam_GetParamSparseTable((QCam_Settings*)&qSettings, qprmBinning, &Table[0], &TableSize);
 		for (int i = 0; i < TableSize; i++)
 		{
@@ -1668,8 +1837,9 @@ asynStatus QImage::readEnum(asynUser *pasynUser,
 			(*nIn)++;
 		}
 	}
-	else if (pasynUser->reason == qImageFormat)
+	else if (!status && pasynUser->reason == qImageFormat)
 	{
+		*nIn = 0;
 		QCam_GetParamSparseTable((QCam_Settings*)&qSettings, qprmImageFormat, &Table[0], &TableSize);
 		for (int i = 0; i < TableSize; i++)
 		{
@@ -1723,47 +1893,88 @@ asynStatus QImage::readEnum(asynUser *pasynUser,
 			(*nIn)++;
 		}
 	}
+	else if (!status && pasynUser->reason == qReadoutSpeed)
+	{
+		*nIn = 0;
+		QCam_GetParamSparseTable((QCam_Settings*)&qSettings, qprmReadoutSpeed, &Table[0], &TableSize);
+		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, " sparse param size = %d\n", TableSize);
+		for (int i = 0; i < TableSize; i++)
+		{
+			//asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "readout speed %ld\n", Table[i]);
+			if (strings[*nIn]) free(strings[*nIn]);
+			switch (Table[i])
+			{
+			case qcReadout20M:
+				strncpy(enumString, "20 Mhz\0", 7);
+				break;
+			case qcReadout10M:
+				strncpy(enumString, "10 Mhz\0", 7);
+				break;
+			case qcReadout5M:
+				strncpy(enumString, "5 Mhz\0", 6);
+				break;
+			case qcReadout2M5:
+				strncpy(enumString, "2.5 Mhz\0", 8);
+				break;
+			case qcReadout1M:
+				strncpy(enumString, "1 Mhz\0", 6);
+				break;
+			case qcReadout24M:
+				strncpy(enumString, "24 Mhz\0", 7);
+				break;
+			case qcReadout48M:
+				strncpy(enumString, "48 Mhz\0", 7);
+				break;
+			case qcReadout40M:
+				strncpy(enumString, "40 Mhz\0", 7);
+				break;
+			case qcReadout30M:
+				strncpy(enumString, "30 Mhz\0", 7);
+				break;
+			}
+			strings[*nIn] = epicsStrDup(enumString);
+			values[*nIn] = i;
+			severities[*nIn] = 0;
+			(*nIn)++;
+		}
+	}
+	
+	else if (pasynUser->reason == ADImageMode)
+	{
+		//Add Single Fast to ImageModes 
+	
+		*nIn = 0;
+		strncpy(enumString, "Single\0", 7);
+		strings[*nIn] = epicsStrDup(enumString);
+		values[*nIn] = 0;
+		severities[*nIn] = 0;
+		(*nIn)++;
+
+		strncpy(enumString, "Multiple\0", 9);
+		strings[*nIn] = epicsStrDup(enumString);
+		values[*nIn] = 1;
+		severities[*nIn] = 0;
+		(*nIn)++;
+
+		strncpy(enumString, "Continuous\0", 11);
+		strings[*nIn] = epicsStrDup(enumString);
+		values[*nIn] = 2;
+		severities[*nIn] = 0;
+		(*nIn)++;
+
+		strncpy(enumString, "Single Fast\0", 12);
+		strings[*nIn] = epicsStrDup(enumString);
+		values[*nIn] = 3;
+		severities[*nIn] = 0;
+		(*nIn)++;
+
+	}
+	
 	else
 	{
 		return ADDriver::readEnum(pasynUser, strings, values, severities, nElements, nIn);
 	}
-	
 
-	// Get the featureInfo for this parameter, set if it exists, is implemented, and is ATenum
-	/*
-	featureInfo *info = &featureInfo_[index];
-	if (!info->exists) return asynError;
-	if (!info->isImplemented) {
-		if (strings[0]) free(strings[0]);
-		if (strings[1]) free(strings[1]);
-		if (info->type == ATbool) {
-			strings[0] = epicsStrDup("N.A. 0");
-			strings[1] = epicsStrDup("N.A. 1");
-			*nIn = 2;
-		}
-		else {
-			strings[0] = epicsStrDup("N.A.");
-			*nIn = 1;
-		}
-		return asynSuccess;
-	}
-	if (info->type != ATenum) return asynError;
-	
-	status = AT_GetEnumCount(handle_, info->featureNameWC, &enumCount);
-	for (i = 0; ((i<enumCount) && (i<(int)nElements)); i++) 
-	{
-		status |= AT_IsEnumIndexImplemented(handle_, info->featureNameWC, i, &isImplemented);
-		if (!isImplemented) continue;
-		if (strings[*nIn]) free(strings[*nIn]);
-		status |= AT_GetEnumStringByIndex(handle_, info->featureNameWC, i,
-			enumStringWC, MAX_FEATURE_NAME_LEN - 1);
-		WCSToMBS(enumString, enumStringWC, sizeof(enumString) - 1);
-		strings[*nIn] = epicsStrDup(enumString);
-		values[*nIn] = i;
-		severities[*nIn] = 0;
-		(*nIn)++;
-	}
-	*/
 	if (status) 
 	{
 		asynPrint(pasynUserSelf, ASYN_TRACE_ERROR,
@@ -1886,7 +2097,7 @@ asynStatus QImage::writeInt32(asynUser *pasynUser, epicsInt32 value)
 	}
 	else if (function == qInitialize)
 	{
-		status |= initializeQImage();
+		//status |= initializeQImage();
 	}
 	else if (function == qReadoutSpeed)
 	{
@@ -2000,6 +2211,26 @@ asynStatus QImage::writeFloat64(asynUser *pasynUser, epicsFloat64 value)
 		if (!status) status |= resultCode(functionName, "QCam_ReadSettingsFromCam", QCam_ReadSettingsFromCam(qHandle, (QCam_Settings*)&qSettings));
 		if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmExposure)", QCam_SetParam((QCam_Settings*)&qSettings, qprmExposure, lVal));
 		if (!status) status |= resultCode(functionName, "QCam_SendSettingsToCam", QCam_SendSettingsToCam(qHandle, (QCam_Settings*)&qSettings));
+
+		m_exposureTime = value;
+	}
+	else if (function == ADAcquirePeriod)
+	{
+		
+		asynPrint(pasynUserSelf, ASYN_TRACE_FLOW, "%s: setting acquire period to %f\n", functionName, value);
+		status = setDoubleParam(ADAcquirePeriod, value);
+		//status = setDoubleParam(ADAcquirePeriodRBV, value);
+		
+		if (qerrSuccess == QCam_IsParamSupported(qHandle, qprmTriggerDelay))
+		{
+			//status |= resultCode(functionName, "QCam_GetParam(qprmTriggerDelay)", QCam_GetParam((QCam_Settings*)&qSettings, qprmTriggerDelay, &uvalue));
+			unsigned long lVal = (unsigned long)(value*1e6);
+			if (!status) status |= resultCode(functionName, "QCam_ReadSettingsFromCam", QCam_ReadSettingsFromCam(qHandle, (QCam_Settings*)&qSettings));
+			if (!status) status |= resultCode(functionName, "QCam_SetParam(qprmTriggerDelay)", QCam_SetParam((QCam_Settings*)&qSettings, qprmTriggerDelay, lVal));
+			if (!status) status |= resultCode(functionName, "QCam_SendSettingsToCam", QCam_SendSettingsToCam(qHandle, (QCam_Settings*)&qSettings));
+		}
+		m_acquirePeriod = value;
+
 	}
 	else if (function == ADGain)
 	{
@@ -2070,102 +2301,6 @@ asynStatus QImage::writeFloat64(asynUser *pasynUser, epicsFloat64 value)
 
 //------------------------------------------------------------------------------------------------------------------------------------------------------------
 /*
-asynStatus QImage::queueFrame(unsigned long display)
-{
-int           status        = asynSuccess;
-size_t        dims[2] = { 2048, 2048 };
-NDDataType_t  dataType;
-QCam_Frame    *pFrame;
-const char    *functionName = "queueFrame";
-
-if ((display>=0)&&(display<(unsigned long)num_buffs))
-{
-//status |= getIntegerParam(ADSizeX, (int *)&dims[0]);
-//status |= getIntegerParam(ADSizeY, (int *)&dims[1]);
-status |= getIntegerParam(NDDataType, (int *)&dataType);
-if (expSntl)
-{
-if (pImage.size() > display)
-if(pImage[display])
-pImage[display]->release();
-}
-asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Allocating NDArray [%d] %d x %d datatype %d\n", functionName, display, dims[0], dims[1], dataType);
-NDArray* ndarr = pNDArrayPool->alloc(2, dims, dataType, 0, NULL);
-//this->pImage[display] = this->pNDArrayPool->alloc(2, dims, dataType, 0, NULL);
-//if (!this->pImage[display])
-if (ndarr == NULL)
-{
-asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Error: Problem allocating NDArray %d\n", functionName, display);
-return asynError;
-}
-pImage.push_back(ndarr);
-//qFrame.frame[display].pBuffer = this->pImage[display]->pData;
-qFrame.frame[display].pBuffer = ndarr->pData;
-pFrame = &qFrame.frame[display];
-asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Calling QCam_QueueFrame\n", functionName);
-status |= resultCode(functionName, "QCam_QueueFrame", QCam_QueueFrame(qHandle, pFrame, QImageCallback, qcCallbackDone | qcCallbackExposeDone, this, display));
-}
-else
-{
-asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Frame Out of Range\n", functionName);
-status = asynError;
-}
-
-return((asynStatus)status);
-}
-
-asynStatus QImage::initializeBuffers()
-{
-int           status        = asynSuccess;
-size_t        dims[2];
-NDDataType_t  dataType;
-const char    *functionName = "initializeBuffers";
-
-status |= resultCode(functionName, "QCam_Abort", QCam_Abort(qHandle));
-status |= getIntegerParam(ADSizeX, (int *)&dims[0]);
-status |= getIntegerParam(ADSizeY, (int *)&dims[1]);
-status |= getIntegerParam(NDDataType, (int *)&dataType);
-switch((int)dataType) {
-case 0:
-rawDataSize = (unsigned long)(dims[0]*dims[1]*sizeof(epicsInt8));
-break;
-case 1:
-rawDataSize = (unsigned long)(dims[0]*dims[1]*sizeof(epicsUInt8));
-break;
-case 2:
-rawDataSize = (unsigned long)(dims[0]*dims[1]*sizeof(epicsInt16));
-break;
-case 3:
-rawDataSize = (unsigned long)(dims[0]*dims[1]*sizeof(epicsUInt16));
-break;
-case 4:
-rawDataSize = (unsigned long)(dims[0]*dims[1]*sizeof(epicsInt32));
-break;
-case 5:
-rawDataSize = (unsigned long)(dims[0]*dims[1]*sizeof(epicsUInt32));
-break;
-case 6:
-rawDataSize = (unsigned long)(dims[0]*dims[1]*sizeof(epicsFloat32));
-break;
-case 7:
-rawDataSize = (unsigned long)(dims[0]*dims[1]*sizeof(epicsFloat64));
-break;
-default:
-asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "\n\n%s: ERROR: Unknown Data Type\n\n", functionName);
-status |= asynError;
-}
-for(int i=0; i<num_buffs; i++)
-{
-qFrame.frame[i].bufferSize = rawDataSize;
-status |= queueFrame(i);
-}
-asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: frame buffer initialized\n", functionName);
-
-return((asynStatus)status);
-}
-
-
-/*
 void QImage::exposureTask()
 {
 int         status        = asynSuccess;
@@ -2222,3 +2357,4 @@ else this->unlock();
 }
 }
 */
+
