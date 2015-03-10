@@ -29,7 +29,7 @@
 #include <iocsh.h>
 #include <epicsExit.h>
 #include <queue>
-#include <vector>
+#include <unordered_map>
 
 #include "QCamApi.h"
 #include "ADDriver.h"
@@ -154,7 +154,7 @@ public:
 		NDArray			*ndArray;
 		QCam_Err		errorcode;
 		unsigned long	flags;
-		unsigned long	count;
+		unsigned long   frameId;
 	};
 
 	// Our data
@@ -163,6 +163,7 @@ public:
 	epicsEventId m_acquireEventId;
 	epicsMutex freeFrameMutex;
 	epicsMutex capFrameMutex;
+	epicsMutex aquireMutex;
 
 	//epicsMutex detectorMutex;
 
@@ -189,10 +190,10 @@ public:
 	signed long		tempMin;
 	unsigned long   coolerReg;
 	unsigned long   rawDataSize;
+	NDDataType_t	m_dataType;
 	double m_acquirePeriod;
 	double m_acquireTime;
 	int	_numImages;
-	int	_pushedFrames;
 	int	_capturedFrames;
 
 	unsigned long maxWidth;
@@ -206,11 +207,16 @@ public:
 	
 	unsigned long triggerType;
 
-	bool _adAcquire;
+	volatile bool _adAcquire;
 	std::queue<int>	freeFrames;
 	std::queue<int>	collectedFrames;
-	std::vector<QNDFrame>	pFrames;
-	
+	std::unordered_map<unsigned long, QNDFrame*>	pFrames;
+	unsigned long m_frameCntr;
+	size_t			m_dims[2];
+
+	asynStatus allocFrame(unsigned long &frameId);
+	asynStatus releaseFrame(unsigned long frameId);
+
 	bool exiting_;
 	bool isSettingsInit;
 
