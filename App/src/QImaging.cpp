@@ -12,17 +12,33 @@
 #define MAX_ENUM_STATES 16
 #define ADImageSingleFast 3
 
+/**
+ * @brief Thread to start the frame consumer function
+ * @param drvPvt: QImage class pointer
+ */
 static void exposureTaskC(void *drvPvt)
 {
     QImage *pPvt = (QImage *)drvPvt;
 	pPvt->consumerTask();
 }
+
+/**
+ * @brief Thread to start the software frame queuing function
+ * @param drvPvt: QImage class pointer
+ */
 static void frameTaskC(void *drvPvt)
 {
     QImage *pPvt = (QImage *)drvPvt;
     pPvt->frameTask();
 }
 
+/**
+ * @brief Callback function from the detector when a frame or exposure occur
+ * @param usrPtr: QImage class pointer
+ * @param frameId
+ * @param errorcode
+ * @param flags
+ */
 void QCAMAPI QImageCallback(void* usrPtr, unsigned long frameId, QCam_Err errorcode, unsigned long flags)
 {
 	QImage *pPtr = (QImage *)usrPtr;
@@ -52,21 +68,18 @@ void QCAMAPI QImageCallback(void* usrPtr, unsigned long frameId, QCam_Err errorc
 
 
 //------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-//  * Constructor for QImage; most parameters are simply passed to ADDriver::ADDriver.
-//  * After calling the base class constructor this method creates a thread to compute the simulated detector data,
-//  * and sets reasonable default values for parameters defined in this class, asynNDArrayDriver and ADDriver.
-//  * \param[in] portName The name of the asyn port driver to be created.
-//  * \param[in] dataType The initial data type (NDDataType_t) of the images that this driver will create.
-//  * \param[in] numbuffs The number of frames to hold in the circular buffer.
-//  * \param[in] maxBuffers The maximum number of NDArray buffers that the NDArrayPool for this driver is
-//  *            allowed to allocate. Set this to -1 to allow an unlimited number of buffers.
-//  * \param[in] maxMemory The maximum amount of memory that the NDArrayPool for this driver is
-//  *            allowed to allocate. Set this to -1 to allow an unlimited amount of memory.
-//  * \param[in] priority The thread priority for the asyn port driver thread if ASYN_CANBLOCK is set in asynFlags.
-//  * \param[in] stackSize The stack size for the asyn port driver thread if ASYN_CANBLOCK is set in asynFlags.
-
+/**
+ * @brief QImage::QImage Class constructor
+ * @param portName: The name of the asyn port driver to be created.
+ * @param model: Camera Model name
+ * @param ndDataType: The initial data type (NDDataType_t) of the images that this driver will create.
+ * @param numbuffs: The number of frames to hold in the circular buffer.
+ * @param debug: Debug mode
+ * @param maxBuffers: The maximum number of NDArray buffers that the NDArrayPool for this driver is allowed to allocate. Set this to -1 to allow an unlimited number of buffers.
+ * @param maxMemory: The maximum amount of memory that the NDArrayPool for this driver is allowed to allocate. Set this to -1 to allow an unlimited amount of memory.
+ * @param priority: The thread priority for the asyn port driver thread if ASYN_CANBLOCK is set in asynFlags.
+ * @param stackSize: The stack size for the asyn port driver thread if ASYN_CANBLOCK is set in asynFlags.
+ */
 QImage::QImage(const char *portName, const char *model, NDDataType_t ndDataType, int numbuffs, int debug, int maxBuffers, size_t maxMemory, int priority, int stackSize)
 
 	: ADDriver(portName, 1, (int)NUM_QIMAGE_PARAMS, maxBuffers, maxMemory, asynEnumMask, asynEnumMask, 0, 1, priority, stackSize)
@@ -219,7 +232,19 @@ QImage::QImage(const char *portName, const char *model, NDDataType_t ndDataType,
 
 }
 
-// Configuration command, called directly or from iocsh
+/**
+ * @brief QImageConfig: Configuration command, called directly or from iocsh
+ * @param portName
+ * @param model
+ * @param dataType
+ * @param numbuffs
+ * @param debug
+ * @param maxBuffers
+ * @param maxMemory
+ * @param priority
+ * @param stackSize
+ * @return
+ */
 extern "C" int QImageConfig(const char *portName, const char *model, int dataType, int numbuffs, int debug, int maxBuffers, size_t maxMemory, int priority, int stackSize)
 {
 	new QImage(portName, model, (NDDataType_t)dataType, numbuffs, debug, maxBuffers, maxMemory, priority, stackSize);
@@ -248,11 +273,18 @@ static const iocshArg * const QImageConfigArgs[] = { &QImageConfigArg0,
 
 static const iocshFuncDef configQImage = { "QImageConfig", 9, QImageConfigArgs };
 
+/**
+ * @brief configQImageCallFunc: Call constructor
+ * @param args
+ */
 static void configQImageCallFunc(const iocshArgBuf *args)
 {
 	QImageConfig(args[0].sval, args[1].sval, args[2].ival, args[3].ival, args[4].ival, args[5].ival, args[6].ival, args[7].ival, args[8].ival);
 }
 
+/**
+ * @brief QImageRegister: register the detector
+ */
 static void QImageRegister(void)
 {
 	iocshRegister(&configQImage, configQImageCallFunc);
@@ -262,7 +294,10 @@ extern "C" {
 	epicsExportRegistrar(QImageRegister);
 }
 
-
+/**
+ * @brief QImage::connectQImage: connect to the detector
+ * @return
+ */
 asynStatus QImage::connectQImage()
 {
 	int               status        = asynSuccess;
@@ -308,6 +343,10 @@ asynStatus QImage::connectQImage()
 	return((asynStatus)status);
 }
 
+/**
+ * @brief QImage::getCameraInfo: Queries properties from the detector
+ * @return
+ */
 asynStatus QImage::getCameraInfo()
 {
 	const char        *functionName = "getCameraInfo";
@@ -365,6 +404,9 @@ asynStatus QImage::getCameraInfo()
 	return((asynStatus)status);
 }
 
+/**
+ * @brief QImage::consumerTask: Thread function to accept new frames from the detector and push them down the pipeline
+ */
 void QImage::consumerTask()
 {
 	int          status = asynSuccess;
@@ -473,6 +515,9 @@ void QImage::consumerTask()
 	}
 }
 
+/**
+ * @brief QImage::frameTask: Thread function for generating software triggers for the detector
+ */
 void QImage::frameTask()
 {
 	int          status = asynSuccess;
@@ -555,6 +600,10 @@ void QImage::frameTask()
 	}
 }
 
+/**
+ * @brief QImage::initializeFrames: Init frame buffers
+ * @return
+ */
 asynStatus QImage::initializeFrames()
 {
 	int				status = asynSuccess;
@@ -664,6 +713,11 @@ asynStatus QImage::initializeFrames()
 
 }
 
+/**
+ * @brief QImage::allocFrame: Allocate a single frame buffer
+ * @param frameId
+ * @return
+ */
 asynStatus QImage::allocFrame(unsigned long &frameId)
 {
 	const char    *functionName = "allocFrame";
@@ -693,7 +747,11 @@ asynStatus QImage::allocFrame(unsigned long &frameId)
 	return asynSuccess;
 }
 
-
+/**
+ * @brief QImage::releaseFrame: Free frame buffer data
+ * @param frameId
+ * @return
+ */
 asynStatus QImage::releaseFrame(unsigned long frameId)
 {
 	const char    *functionName = "releaseFrame";
@@ -709,6 +767,10 @@ asynStatus QImage::releaseFrame(unsigned long frameId)
 	return asynSuccess;
 }
 
+/**
+ * @brief QImage::initializeQImage: Init function called at detector reset
+ * @return
+ */
 asynStatus QImage::initializeQImage()
 {
 	int           status = asynSuccess;
@@ -877,7 +939,9 @@ asynStatus QImage::initializeQImage()
 	return((asynStatus)status);
 }
 
-// Function called at IOC exit
+/**
+ * @brief QImage::shutdown: Function called at IOC exit
+ */
 void QImage::shutdown()
 {
 	const char *functionName = "shutdown";
@@ -897,6 +961,10 @@ void QImage::shutdown()
 	captureEvent2.signal();
 }
 
+/**
+ * @brief QImage::disconnectQImage: Called during shutdown to disconnect from the detector
+ * @return
+ */
 asynStatus QImage::disconnectQImage()
 {
 	int        status        = asynSuccess;
@@ -945,6 +1013,10 @@ asynStatus QImage::disconnectQImage()
 	return((asynStatus)status);
 }
 
+/**
+ * @brief QImage::pushCollectedFrame: Pushes an aquired frame to a queue to be proecssed by consumer thread
+ * @param id
+ */
 void QImage::pushCollectedFrame(int id)
 {
 	capFrameMutex.lock();
@@ -954,6 +1026,9 @@ void QImage::pushCollectedFrame(int id)
 	captureEvent.signal();
 }
 
+/**
+ * @brief QImage::setExposureDone: Call signal when exposure happened on the detector
+ */
 void QImage::setExposureDone()
 {
 	captureEvent2.signal();
@@ -966,6 +1041,10 @@ void QImage::setExposureDone()
 	//callParamCallbacks();
 }
 
+/**
+ * @brief QImage::queryQImageSettings: Queries properties from the detector
+ * @return
+ */
 asynStatus QImage::queryQImageSettings()
 {
 	int           status = asynSuccess;
@@ -1209,12 +1288,11 @@ asynStatus QImage::queryQImageSettings()
 	return((asynStatus)status);
 }
 
-//  * Report status of the driver.
-//  * Prints details about the driver if details>0.
-//  * It then calls the ADDriver::report() method.
-//  * \param[in] fp File pointed passed by caller where the output is written to.
-//  * \param[in] details If >0 then driver details are printed.
-
+/**
+ * @brief QImage::q_acquire : called when aquire is pressed
+ * @param value
+ * @return
+ */
 asynStatus QImage::q_acquire(epicsInt32 value)
 {
 	epicsInt32 status = asynSuccess;
@@ -1379,6 +1457,11 @@ asynStatus QImage::q_acquire(epicsInt32 value)
 
 }
 
+/**
+ * @brief QImage::q_setTriggerMode: Sets the detector trigger mode
+ * @param value
+ * @return
+ */
 asynStatus QImage::q_setTriggerMode(epicsInt32 value)
 {
 	epicsInt32 status = asynSuccess;
@@ -1433,6 +1516,9 @@ asynStatus QImage::q_setTriggerMode(epicsInt32 value)
 
 }
 
+/**
+ * @brief QImage::resetFrameQueues: Clear out the frame buffer queue
+ */
 void QImage::resetFrameQueues()
 {
 	const char     *functionName = "resetFrameQueues";
@@ -1472,10 +1558,14 @@ void QImage::resetFrameQueues()
 	capFrameMutex.lock();
 	_capturedFrames = 0;
 	capFrameMutex.unlock();
-
-	
 }
 
+/**
+ * @brief QImage::q_setBinning: Sets the detector binning
+ * @param function
+ * @param value
+ * @return
+ */
 asynStatus QImage::q_setBinning(epicsInt32 function, epicsInt32 value)
 {
 
@@ -1501,6 +1591,12 @@ asynStatus QImage::q_setBinning(epicsInt32 function, epicsInt32 value)
 	return((asynStatus)status);
 }
 
+/**
+ * @brief QImage::q_setImageSize: Sets the image size
+ * @param function
+ * @param value
+ * @return
+ */
 asynStatus QImage::q_setImageSize(epicsInt32 function, epicsInt32 value)
 {
 
@@ -1570,6 +1666,12 @@ asynStatus QImage::q_setImageSize(epicsInt32 function, epicsInt32 value)
 	return((asynStatus)status);
 }
 
+/**
+ * @brief QImage::q_setMinXY: Sets the image min x
+ * @param function
+ * @param value
+ * @return
+ */
 asynStatus QImage::q_setMinXY(epicsInt32 function, epicsInt32 value)
 {
 
@@ -1638,6 +1740,12 @@ asynStatus QImage::q_setMinXY(epicsInt32 function, epicsInt32 value)
 	return((asynStatus)status);
 }
 
+/**
+ * @brief QImage::q_setDataTypeAndColorMode: Set detector frame data type and color mode
+ * @param function
+ * @param value
+ * @return
+ */
 asynStatus QImage::q_setDataTypeAndColorMode(epicsInt32 function, epicsInt32 value)
 {
 	epicsInt32 status = asynSuccess;
@@ -1670,6 +1778,11 @@ asynStatus QImage::q_setDataTypeAndColorMode(epicsInt32 function, epicsInt32 val
 	return((asynStatus)status);
 }
 
+/**
+ * @brief QImage::q_setTemperature: Set temp on the detector cooler
+ * @param value
+ * @return
+ */
 asynStatus QImage::q_setTemperature(epicsFloat64 value)
 {
 
@@ -1707,6 +1820,11 @@ asynStatus QImage::q_setTemperature(epicsFloat64 value)
 
 }
 
+/**
+ * @brief QImage::q_resetCamera: Reset the detector
+ * @param value
+ * @return
+ */
 asynStatus QImage::q_resetCamera(epicsInt32 value)
 {
 	const char     *functionName = "q_resetCamera";
@@ -1726,6 +1844,11 @@ asynStatus QImage::q_resetCamera(epicsInt32 value)
 	return initializeQImage();
 }
 
+/**
+ * @brief QImage::q_setCoolerActive: Activate or deactivate the cooler
+ * @param value
+ * @return
+ */
 asynStatus QImage::q_setCoolerActive(epicsInt32 value)
 {
 	const char     *functionName = "q_setCoolerActive";
@@ -1746,6 +1869,11 @@ asynStatus QImage::q_setCoolerActive(epicsInt32 value)
 	return((asynStatus)status);
 }
 
+/**
+ * @brief QImage::q_setReadoutSpeed: Change the readout speed
+ * @param value
+ * @return
+ */
 asynStatus QImage::q_setReadoutSpeed(epicsInt32 value)
 {
 	const char     *functionName = "q_setCoolerActive";
@@ -1769,6 +1897,11 @@ asynStatus QImage::q_setReadoutSpeed(epicsInt32 value)
 	return((asynStatus)status);
 }
 
+/**
+ * @brief QImage::q_autoExposure: Call auto exposure on the detector
+ * @param value
+ * @return
+ */
 asynStatus QImage::q_autoExposure(epicsInt32 value)
 {
 	const char     *functionName = "q_autoExposure";
@@ -1789,6 +1922,11 @@ asynStatus QImage::q_autoExposure(epicsInt32 value)
 	return((asynStatus)status);
 }
 
+/**
+ * @brief QImage::q_whiteBalance: Call white balance function on the detector
+ * @param value
+ * @return
+ */
 asynStatus QImage::q_whiteBalance(epicsInt32 value)
 {
 	const char     *functionName = "q_whiteBalance";
@@ -1807,6 +1945,16 @@ asynStatus QImage::q_whiteBalance(epicsInt32 value)
 	return((asynStatus)status);
 }
 
+/**
+ * @brief QImage::readEnum: Adds frame data type and color mode to enums
+ * @param pasynUser
+ * @param strings
+ * @param values
+ * @param severities
+ * @param nElements
+ * @param nIn
+ * @return
+ */
 asynStatus QImage::readEnum(asynUser *pasynUser, 
 							char *strings[], 
 							int values[], 
@@ -1984,7 +2132,11 @@ asynStatus QImage::readEnum(asynUser *pasynUser,
 	return asynSuccess;
 }
 
-
+/**
+ * @brief QImage::report
+ * @param fp
+ * @param details
+ */
 void QImage::report(FILE *fp, int details)
 {
     fprintf(fp, "QImage detector %s\n", this->portName);
@@ -1996,6 +2148,13 @@ void QImage::report(FILE *fp, int details)
     ADDriver::report(fp, details);
 }
 
+/**
+ * @brief QImage::resultCode: Checks the result code from QIMAGE api functions
+ * @param funcName
+ * @param cmdName
+ * @param errorcode
+ * @return
+ */
 asynStatus QImage::resultCode(const char *funcName, const char *cmdName, QCam_Err errorcode)
 {
 	int        status        = asynSuccess;
@@ -2058,11 +2217,14 @@ asynStatus QImage::resultCode(const char *funcName, const char *cmdName, QCam_Er
 	return((asynStatus)status);
 }
 
-//  * Called when asyn clients call pasynInt32->write().
-//  * This function performs actions for some parameters, including ADAcquire, ADColorMode, etc.
-//  * For all parameters it sets the value in the parameter library and calls any registered callbacks..
-//  * \param[in] pasynUser pasynUser structure that encodes the reason and address.
-//  * \param[in] value Value to write.
+/**
+ * @brief QImage::writeInt32: Called when asyn clients call pasynInt32->write().
+ *  This function performs actions for some parameters, including ADAcquire, ADColorMode, etc.
+ *  For all parameters it sets the value in the parameter library and calls any registered callbacks.
+ * @param pasynUser: Structure that encodes the reason and address.
+ * @param value: Value to write
+ * @return
+ */
 asynStatus QImage::writeInt32(asynUser *pasynUser, epicsInt32 value)
 {
 	int            function = pasynUser->reason;
@@ -2168,11 +2330,14 @@ asynStatus QImage::writeInt32(asynUser *pasynUser, epicsInt32 value)
 
 }
 
-//  * Called when asyn clients call pasynFloat64->write().
-//  * This function performs actions for some parameters, including ADAcquireTime, ADGain, etc.
-//  * For all parameters it sets the value in the parameter library and calls any registered callbacks..
-//  * \param[in] pasynUser pasynUser structure that encodes the reason and address.
-//  * \param[in] value Value to write.
+/**
+ * @brief QImage::writeFloat64: Called when asyn clients call pasynFloat64->write().
+ *  This function performs actions for some parameters, including ADAcquireTime, ADGain, etc.
+ *  For all parameters it sets the value in the parameter library and calls any registered callbacks.
+ * @param pasynUser: Structure that encodes the reason and address.
+ * @param value: Value to write.
+ * @return
+ */
 asynStatus QImage::writeFloat64(asynUser *pasynUser, epicsFloat64 value)
 {
 	int				function = pasynUser->reason;
@@ -2296,65 +2461,3 @@ asynStatus QImage::writeFloat64(asynUser *pasynUser, epicsFloat64 value)
 	return((asynStatus)status);
 
 }
-
-
-
-//------------------------------------------------------------------------------------------------------------------------------------------------------------
-/*
-void QImage::exposureTask()
-{
-int         status        = asynSuccess;
-int			iMode, tMode, numImages, imagesCounted, stopStatus, debug;
-double      acquirePeriod, expTime, delay;
-taskData    task;
-const char	*functionName = "exposureTask";
-
-while (!exiting_) {
-this->lock();
-if (!this->exposureQueue.empty()) {
-task = this->exposureQueue.front();
-this->exposureQueue.pop();
-this->unlock();
-status = getIntegerParam(qShowDiags, &debug);
-if (debug >= 1)
-asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Acquisition OK\n", functionName);
-status |= getIntegerParam(ADTriggerMode, &tMode);
-if (tMode == qcTriggerSoftware) {
-status |= setIntegerParam(ADStatus, ADStatusAcquire);
-status |= callParamCallbacks();
-}
-status |= resultCode(functionName, "ExposureCallback", task.errorcode);
-status |= getIntegerParam(ADImageMode, &iMode);
-status |= getIntegerParam(ADNumImages, &numImages);
-status |= getIntegerParam(ADNumImagesCounter, &imagesCounted);
-status |= getDoubleParam(ADAcquirePeriod, &acquirePeriod);
-status |= getDoubleParam(ADAcquireTime, &expTime);
-status |= setIntegerParam(ADNumImagesCounter, ++imagesCounted);
-status |= callParamCallbacks();
-if (tMode == qcTriggerSoftware) {
-if (((imagesCounted >= numImages) && (iMode == ADImageMultiple)) ||
-((imagesCounted >= 1)         && (iMode == ADImageSingle))) {
-if (debug >= 1)
-asynPrint(pasynUserSelf, ASYN_TRACE_ERROR, "%s: Acquisition is Done\n", functionName);
-status |= setIntegerParam(ADStatus, ADStatusIdle);
-status |= setIntegerParam(ADAcquire, 0);
-status |= callParamCallbacks();
-} else {
-delay = acquirePeriod - expTime;
-if (delay > 0.0)
-stopStatus = epicsEventWaitWithTimeout(this->stopEventId, delay);
-else
-stopStatus = epicsEventWaitWithTimeout(this->stopEventId, RETIGA_POLL_TIME);
-if (stopStatus != epicsEventWaitOK) {
-status |= resultCode(functionName, "QCam_Trigger", QCam_Trigger(qHandle));
-status |= setIntegerParam(qTrgCnt, ++trgCnt);
-status |= callParamCallbacks();
-}
-}
-}
-}
-else this->unlock();
-}
-}
-*/
-
