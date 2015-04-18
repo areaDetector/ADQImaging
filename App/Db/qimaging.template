@@ -1,6 +1,8 @@
 # Database for the records specific to the QImage driver
 # Jeff Gebhardt
 
+include "ADBase.template"
+
 ########################################################################
 #                                                                      #
 #                         Detector Features                            #
