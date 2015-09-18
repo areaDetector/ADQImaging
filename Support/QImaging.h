@@ -46,7 +46,7 @@ class QImage : public ADDriver {
 public:
     QImage(const char *portName, const char *model, NDDataType_t dataType, int numbuffs, int debug, int maxBuffers, size_t maxMemory, int priority, int stackSize);
 
-	friend void QCAMAPI QImageCallback(void* usrPtr, unsigned long usrData, QCam_Err errorcode, unsigned long flags);
+	friend void QCAMAPI QImageCallback(void* usrPtr, unsigned long frameId, QCam_Err errorcode, unsigned long flags);
 
     // These are the methods that we override from ADDriver
     virtual asynStatus writeInt32(asynUser *pasynUser, epicsInt32 value);
