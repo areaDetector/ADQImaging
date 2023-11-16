@@ -158,7 +158,6 @@ public:
 	};
 
 	// Our data
-	epicsTimeStamp  startTime;
 	epicsEventId    stopEventId;
 	epicsEventId m_acquireEventId;
 	epicsMutex freeFrameMutex;
