@@ -6,5 +6,7 @@ driver for detectors from
 [QImaging Technology](http://www.qimaging.com/products/software/)
 using Software Development Kit (SDK).
 
+**This repository is no longer active and was archived on June 13, 2025.**
+
 Additional information:
 * [Release notes and links to source and binary releases](RELEASE.md).
