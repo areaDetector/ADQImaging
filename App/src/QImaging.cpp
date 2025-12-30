@@ -472,10 +472,8 @@ void QImage::consumerTask()
 			if ((arrayCallbacks))
 			{
 				// Put the frame number and time stamp into the buffer
-				// Set the the start time
-				epicsTimeGetCurrent(&startTime);
 				pFrames[frameId]->ndArray->uniqueId = frameId;
-				pFrames[frameId]->ndArray->timeStamp = startTime.secPastEpoch + startTime.nsec / 1.e9;
+				updateTimeStamps(pFrames[frameId]->ndArray);
 				// Get any attributes that have been defined for this driver
 				this->getAttributes(pFrames[frameId]->ndArray->pAttributeList);
 				// Call the NDArray callback
